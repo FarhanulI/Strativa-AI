@@ -1,0 +1,39 @@
+[project]
+name = "ai-content-studio-api"
+version = "0.1.0"
+description = "Backend API for AI Content Studio."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.13.3",
+    "arq>=0.26.1",
+    "asyncpg>=0.29.0",
+    "fastapi>=0.115.0",
+    "pgvector>=0.3.5",
+    "pydantic-settings>=2.5.2",
+    "redis>=5.1.1",
+    "sqlalchemy[asyncio]>=2.0.35",
+    "structlog>=24.4.0",
+    "uvicorn[standard]>=0.30.6",
+]
+
+[dependency-groups]
+dev = [
+    "aiosqlite>=0.20.0",
+    "httpx>=0.27.2",
+    "pytest>=8.3.3",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.6.8",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]

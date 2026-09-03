@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
 if TYPE_CHECKING:
+    from app.models.content_opportunity import ContentOpportunity
     from app.models.market_intelligence import MarketIntelligence
     from app.models.topic import Topic
 
@@ -73,6 +74,10 @@ class MarketSignal(Base):
 
     market_intelligence: Mapped["MarketIntelligence"] = relationship(
         back_populates="market_signals",
+        lazy="selectin",
+    )
+    opportunities: Mapped[list["ContentOpportunity"]] = relationship(
+        back_populates="market_signal",
         lazy="selectin",
     )
     topic: Mapped["Topic | None"] = relationship(

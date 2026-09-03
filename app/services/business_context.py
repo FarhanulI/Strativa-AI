@@ -42,6 +42,7 @@ class BusinessContextService:
             target_market=target_market,
             pricing_position=pricing_position,
         )
+        profile.business_context = context
         await self.business_context_repository.create(context)
         await self.session.commit()
         return context

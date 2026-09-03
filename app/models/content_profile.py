@@ -12,8 +12,10 @@ from app.core.database import Base
 
 if TYPE_CHECKING:
     from app.models.audience_intelligence import AudienceIntelligence
+    from app.models.audience_signal import AudienceSignal
     from app.models.brand import Brand
     from app.models.business_context import BusinessContext
+    from app.models.content_opportunity import ContentOpportunity
     from app.models.market_intelligence import MarketIntelligence
     from app.models.workspace import Workspace
 
@@ -64,7 +66,7 @@ class ContentProfile(Base):
     )
     business_context: Mapped["BusinessContext | None"] = relationship(
         back_populates="content_profile",
-        lazy="selectin",
+        lazy="noload",
         uselist=False,
         cascade="all, delete-orphan",
     )
@@ -79,4 +81,14 @@ class ContentProfile(Base):
         lazy="selectin",
         uselist=False,
         cascade="all, delete-orphan",
+    )
+    opportunities: Mapped[list["ContentOpportunity"]] = relationship(
+        back_populates="profile",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    audience_signals: Mapped[list["AudienceSignal"]] = relationship(
+        back_populates="profile",
+        cascade="all, delete-orphan",
+        lazy="selectin",
     )

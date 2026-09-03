@@ -9,7 +9,7 @@ from app.main import app
 
 
 @pytest.fixture
-async def test_db() -> AsyncGenerator[AsyncSession, None]:
+async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Create a test database session using SQLite in-memory"""
     # Use SQLite in-memory database for testing
     # This avoids the need for a running PostgreSQL instance
@@ -31,6 +31,12 @@ async def test_db() -> AsyncGenerator[AsyncSession, None]:
         await conn.run_sync(Base.metadata.drop_all)
 
     await engine.dispose()
+
+
+@pytest.fixture
+async def test_db(db_session: AsyncSession) -> AsyncGenerator[AsyncSession, None]:
+    """Backward-compatible alias for the shared test database session."""
+    yield db_session
 
 
 @pytest.fixture

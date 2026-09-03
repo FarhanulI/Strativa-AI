@@ -3,9 +3,11 @@ from fastapi import APIRouter
 from app.api.v1.audience_intelligence import router as audience_intelligence_router
 from app.api.v1.audience_objections import router as audience_objections_router
 from app.api.v1.audience_questions import router as audience_questions_router
+from app.api.v1.audience_signals import router as audience_signals_router
 from app.api.v1.brands import router as brands_router
 from app.api.v1.business_context import router as business_context_router
 from app.api.v1.competitors import router as competitors_router
+from app.api.v1.content_opportunities import router as content_opportunities_router
 from app.api.v1.content_profiles import router as content_profiles_router
 from app.api.v1.desires import router as desires_router
 from app.api.v1.health import router as health_router
@@ -23,11 +25,13 @@ api_router = APIRouter()
 api_router.include_router(health_router)
 api_router.include_router(workspaces_router)
 api_router.include_router(content_profiles_router)
+api_router.include_router(content_opportunities_router)
 api_router.include_router(audience_intelligence_router)
 api_router.include_router(personas_router)
 api_router.include_router(pain_points_router)
 api_router.include_router(desires_router)
 api_router.include_router(audience_questions_router)
+api_router.include_router(audience_signals_router)
 api_router.include_router(audience_objections_router)
 api_router.include_router(brands_router)
 api_router.include_router(business_context_router)

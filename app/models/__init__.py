@@ -7,9 +7,23 @@ from app.models.audience_intelligence import (
     PainPoint,
     Persona,
 )
+from app.models.audience_signal import (
+    AudienceSignal,
+    AudienceSignalIntent,
+    AudienceSignalSource,
+    AudienceSignalStatus,
+    AudienceSignalType,
+)
 from app.models.brand import Brand
 from app.models.business_context import BusinessContext
 from app.models.competitor import Competitor
+from app.models.content_opportunity import (
+    ContentOpportunity,
+    OpportunityPriority,
+    OpportunitySource,
+    OpportunityStatus,
+    TargetObjective,
+)
 from app.models.content_profile import ContentProfile, ContentProfileType
 from app.models.market_intelligence import MarketIntelligence
 from app.models.market_signal import MarketSignal
@@ -24,10 +38,20 @@ __all__ = [
     "AudienceIntelligence",
     "AudienceObjection",
     "AudienceQuestion",
+    "AudienceSignal",
+    "AudienceSignalIntent",
+    "AudienceSignalSource",
+    "AudienceSignalStatus",
+    "AudienceSignalType",
     "Base",
     "Brand",
     "BusinessContext",
     "Competitor",
+    "ContentOpportunity",
+    "OpportunityPriority",
+    "OpportunitySource",
+    "OpportunityStatus",
+    "TargetObjective",
     "ContentProfile",
     "ContentProfileType",
     "Desire",

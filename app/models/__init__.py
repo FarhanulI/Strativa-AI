@@ -17,6 +17,13 @@ from app.models.audience_signal import (
 from app.models.brand import Brand
 from app.models.business_context import BusinessContext
 from app.models.competitor import Competitor
+from app.models.content_brief import BriefStatus, ContentBrief, GenerationSource
+from app.models.content_draft import (
+    CompositionMode,
+    ContentDraft,
+    DraftGenerationSource,
+    DraftStatus,
+)
 from app.models.content_opportunity import (
     ContentOpportunity,
     OpportunityPriority,
@@ -24,10 +31,13 @@ from app.models.content_opportunity import (
     OpportunityStatus,
     TargetObjective,
 )
+from app.models.content_performance import ContentPerformance
 from app.models.content_profile import ContentProfile, ContentProfileType
 from app.models.market_intelligence import MarketIntelligence
 from app.models.market_signal import MarketSignal
 from app.models.offer import Offer
+from app.models.performance_analysis import PerformanceAnalysis, PerformanceClassification
+from app.models.performance_insight import PerformanceInsight
 from app.models.product import Product
 from app.models.service import Service
 from app.models.topic import Topic
@@ -48,12 +58,23 @@ __all__ = [
     "BusinessContext",
     "Competitor",
     "ContentOpportunity",
+    "ContentBrief",
+    "ContentDraft",
+    "BriefStatus",
+    "GenerationSource",
+    "CompositionMode",
+    "DraftGenerationSource",
+    "DraftStatus",
     "OpportunityPriority",
     "OpportunitySource",
     "OpportunityStatus",
     "TargetObjective",
     "ContentProfile",
     "ContentProfileType",
+    "ContentPerformance",
+    "PerformanceAnalysis",
+    "PerformanceClassification",
+    "PerformanceInsight",
     "Desire",
     "MarketIntelligence",
     "MarketSignal",

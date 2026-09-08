@@ -1,0 +1,36 @@
+
+# 2. `.claude/settings.json`
+
+Use project-level settings for the repository.
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git diff)",
+      "Bash(git log*)",
+      "Bash(find*)",
+      "Bash(ls*)",
+      "Bash(pwd)",
+      "Bash(grep*)",
+      "Bash(rg*)",
+      "Bash(cat*)",
+      "Bash(python*)",
+      "Bash(pytest*)",
+      "Bash(ruff*)",
+      "Bash(mypy*)",
+      "Bash(alembic*)",
+      "Bash(npm*)",
+      "Bash(pnpm*)",
+      "Bash(npx*)",
+      "Bash(node*)",
+      "Bash(tsc*)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)"
+    ]
+  }
+}

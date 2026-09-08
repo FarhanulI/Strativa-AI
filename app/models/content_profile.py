@@ -15,7 +15,10 @@ if TYPE_CHECKING:
     from app.models.audience_signal import AudienceSignal
     from app.models.brand import Brand
     from app.models.business_context import BusinessContext
+    from app.models.content_brief import ContentBrief
+    from app.models.content_draft import ContentDraft
     from app.models.content_opportunity import ContentOpportunity
+    from app.models.content_performance import ContentPerformance
     from app.models.market_intelligence import MarketIntelligence
     from app.models.workspace import Workspace
 
@@ -87,8 +90,17 @@ class ContentProfile(Base):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+    briefs: Mapped[list["ContentBrief"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan", lazy="selectin"
+    )
+    drafts: Mapped[list["ContentDraft"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan", lazy="selectin"
+    )
     audience_signals: Mapped[list["AudienceSignal"]] = relationship(
         back_populates="profile",
         cascade="all, delete-orphan",
         lazy="selectin",
+    )
+    performance_records: Mapped[list["ContentPerformance"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan", lazy="selectin"
     )

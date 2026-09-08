@@ -16,6 +16,7 @@ class ContentOpportunityCreate(BaseModel):
     source_signal: OpportunitySource
     market_signal_id: UUID | None = None
     audience_signal_id: UUID | None = None
+    performance_insight_id: UUID | None = None
     title: str = Field(..., min_length=1)
     target_objective: TargetObjective
     recommended_format: str | None = Field(None, max_length=64)
@@ -35,6 +36,7 @@ class ContentOpportunityResponse(BaseModel):
     profile_id: UUID
     market_signal_id: UUID | None
     audience_signal_id: UUID | None
+    performance_insight_id: UUID | None
     source_signal: OpportunitySource
     title: str
     strategic_rationale: str

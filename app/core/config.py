@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://contentstudio:password@localhost:5432/contentstudio"
     redis_url: str = "redis://localhost:6379"
     backend_cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
+    llm_provider: str = "gemini"
+    llm_model: str = "gemini-configured"
+    gemini_api_key: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

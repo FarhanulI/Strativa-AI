@@ -12,8 +12,10 @@ from app.core.database import Base
 
 if TYPE_CHECKING:
     from app.models.audience_signal import AudienceSignal
+    from app.models.content_brief import ContentBrief
     from app.models.content_profile import ContentProfile
     from app.models.market_signal import MarketSignal
+    from app.models.performance_insight import PerformanceInsight
 
 
 class OpportunitySource(StrEnum):
@@ -66,6 +68,9 @@ class ContentOpportunity(Base):
     audience_signal_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("audience_signals.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    performance_insight_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("performance_insight.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     source_signal: Mapped[OpportunitySource] = mapped_column(
         SqlEnum(OpportunitySource), nullable=False, index=True
     )
@@ -107,4 +112,8 @@ class ContentOpportunity(Base):
     )
     audience_signal: Mapped["AudienceSignal | None"] = relationship(
         back_populates="opportunities", lazy="selectin"
+    )
+    performance_insight: Mapped["PerformanceInsight | None"] = relationship(lazy="selectin")
+    briefs: Mapped[list["ContentBrief"]] = relationship(
+        back_populates="opportunity", cascade="all, delete-orphan", lazy="selectin"
     )

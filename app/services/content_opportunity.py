@@ -1,6 +1,7 @@
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.strategy.opportunity_scorer import OpportunityScorer
@@ -10,6 +11,7 @@ from app.models.content_opportunity import (
     OpportunitySource,
     OpportunityStatus,
 )
+from app.models.performance_insight import PerformanceInsight
 from app.repositories.audience_signal import AudienceSignalRepository
 from app.repositories.content_opportunity import ContentOpportunityRepository
 from app.repositories.content_profile import ContentProfileRepository
@@ -36,11 +38,38 @@ class ContentOpportunityService:
         source_signal = values["source_signal"]
         market_signal_id = values.get("market_signal_id")
         audience_signal_id = values.get("audience_signal_id")
+        performance_insight_id = values.get("performance_insight_id")
+        if source_signal == OpportunitySource.PERFORMANCE_GAP:
+            if not performance_insight_id or market_signal_id or audience_signal_id:
+                raise ValueError("Performance gap opportunities require a performance insight")
+            result = await self.session.execute(
+                select(PerformanceInsight).where(
+                    PerformanceInsight.id == performance_insight_id,
+                    PerformanceInsight.profile_id == profile_id,
+                )
+            )
+            insight = result.scalar_one_or_none()
+            if not insight:
+                raise ValueError("Performance insight not found")
+            signal = type(
+                "PerformanceSignal",
+                (),
+                {
+                    "strength_score": insight.confidence_score,
+                    "topic": insight.analysis.content_performance.topic,
+                    "expires_at": None,
+                    "detected_at": insight.created_at,
+                },
+            )()
+        elif audience_signal_id is not None:
+            signal = await self._get_audience_signal_for_profile(profile_id, audience_signal_id)
+        else:
+            signal = await self._get_signal_for_profile(profile_id, market_signal_id)
         if source_signal == OpportunitySource.AUDIENCE_QUESTION:
             if audience_signal_id is None or market_signal_id is not None:
                 raise ValueError("Audience question opportunities require an audience signal")
             signal = await self._get_audience_signal_for_profile(profile_id, audience_signal_id)
-        else:
+        elif source_signal != OpportunitySource.PERFORMANCE_GAP:
             if audience_signal_id is not None:
                 raise ValueError("Audience signals require an audience_question opportunity")
             signal = await self._get_signal_for_profile(profile_id, market_signal_id)
@@ -54,6 +83,11 @@ class ContentOpportunityService:
             ),
             audience_signal_id=(
                 signal.id if source_signal == OpportunitySource.AUDIENCE_QUESTION else None
+            ),
+            performance_insight_id=(
+                performance_insight_id
+                if source_signal == OpportunitySource.PERFORMANCE_GAP
+                else None
             ),
             source_signal=source_signal,
             title=values["title"],

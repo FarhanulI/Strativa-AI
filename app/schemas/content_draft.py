@@ -43,6 +43,7 @@ class ContentDraftResponse(BaseModel):
     hook: str
     body: str
     cta: str | None
+    caption: str | None
     status: DraftStatus
     generation_source: DraftGenerationSource
     composition_mode: CompositionMode

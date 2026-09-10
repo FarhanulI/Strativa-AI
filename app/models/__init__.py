@@ -24,6 +24,11 @@ from app.models.content_draft import (
     DraftGenerationSource,
     DraftStatus,
 )
+from app.models.content_draft_variation import (
+    ContentDraftVariation,
+    VariationGenerationSource,
+    VariationType,
+)
 from app.models.content_opportunity import (
     ContentOpportunity,
     OpportunityPriority,
@@ -60,6 +65,9 @@ __all__ = [
     "ContentOpportunity",
     "ContentBrief",
     "ContentDraft",
+    "ContentDraftVariation",
+    "VariationGenerationSource",
+    "VariationType",
     "BriefStatus",
     "GenerationSource",
     "CompositionMode",

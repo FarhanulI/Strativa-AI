@@ -1,9 +1,3 @@
-
-# 2. `.claude/settings.json`
-
-Use project-level settings for the repository.
-
-```json
 {
   "permissions": {
     "allow": [

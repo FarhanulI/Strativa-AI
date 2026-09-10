@@ -283,17 +283,6 @@ Use:
 * pytest
 * Ruff
 
-Do NOT introduce:
-
-* NestJS
-* Django
-* Docker
-* Kubernetes
-* microservices
-* Kafka
-* message brokers
-* unnecessary infrastructure
-
 The MVP is a modular monolith.
 
 ---

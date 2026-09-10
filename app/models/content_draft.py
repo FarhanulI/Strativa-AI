@@ -12,6 +12,7 @@ from app.core.database import Base
 
 if TYPE_CHECKING:
     from app.models.content_brief import ContentBrief
+    from app.models.content_draft_variation import ContentDraftVariation
     from app.models.content_profile import ContentProfile
 
 
@@ -50,6 +51,7 @@ class ContentDraft(Base):
     hook: Mapped[str] = mapped_column(Text, nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     cta: Mapped[str | None] = mapped_column(Text, nullable=True)
+    caption: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[DraftStatus] = mapped_column(
         SqlEnum(DraftStatus), nullable=False, default=DraftStatus.DRAFT, index=True
     )
@@ -81,3 +83,6 @@ class ContentDraft(Base):
 
     profile: Mapped["ContentProfile"] = relationship(back_populates="drafts", lazy="selectin")
     brief: Mapped["ContentBrief"] = relationship(back_populates="drafts", lazy="selectin")
+    variations: Mapped[list["ContentDraftVariation"]] = relationship(
+        back_populates="draft", cascade="all, delete-orphan", lazy="selectin"
+    )

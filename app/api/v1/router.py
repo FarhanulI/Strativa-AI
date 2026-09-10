@@ -8,7 +8,9 @@ from app.api.v1.brands import router as brands_router
 from app.api.v1.business_context import router as business_context_router
 from app.api.v1.competitors import router as competitors_router
 from app.api.v1.content_briefs import router as content_briefs_router
+from app.api.v1.content_draft_variations import router as content_draft_variations_router
 from app.api.v1.content_drafts import router as content_drafts_router
+from app.api.v1.content_evaluations import router as content_evaluations_router
 from app.api.v1.content_opportunities import router as content_opportunities_router
 from app.api.v1.content_profiles import router as content_profiles_router
 from app.api.v1.desires import router as desires_router
@@ -31,6 +33,8 @@ api_router.include_router(content_profiles_router)
 api_router.include_router(content_opportunities_router)
 api_router.include_router(content_briefs_router)
 api_router.include_router(content_drafts_router)
+api_router.include_router(content_draft_variations_router)
+api_router.include_router(content_evaluations_router)
 api_router.include_router(audience_intelligence_router)
 api_router.include_router(personas_router)
 api_router.include_router(pain_points_router)

@@ -8,6 +8,9 @@ class AITask(StrEnum):
     CONTENT_CONCEPT_GENERATION = "content_concept_generation"
     CONTENT_CREATION = "content_creation"
     PERFORMANCE_REASONING = "performance_reasoning"
+    HOOK_GENERATION = "hook_generation"
+    CAPTION_GENERATION = "caption_generation"
+    CONTENT_EVALUATION = "content_evaluation"
 
 
 class AICapability(StrEnum):

@@ -1,4 +1,5 @@
 from app.core.database import Base
+from app.models.ai_job import AIJob, JobStatus
 from app.models.audience_intelligence import (
     AudienceIntelligence,
     AudienceObjection,
@@ -51,6 +52,8 @@ from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember, WorkspaceRole
 
 __all__ = [
+    "AIJob",
+    "JobStatus",
     "AudienceIntelligence",
     "AudienceObjection",
     "AudienceQuestion",

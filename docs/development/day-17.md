@@ -1,6 +1,6 @@
-# Day 16 — Publishing Foundation (revised: cancel + concurrency-safe scheduler)
+# Day 17 — Publishing Foundation (revised: cancel + concurrency-safe scheduler)
 
-## 1. Day 16 Goal
+## 1. Day 17 Goal
 
 Introduce `PublishedContent` as the record of a `ContentDraft` going live,
 closing the "Publish" stage of the core product loop:
@@ -114,7 +114,7 @@ implementation.
 - Retry-on-failure logic for the platform publish call itself.
 - Retracting or editing an already-`published` item (only a not-yet-fired
   `scheduled` item can be cancelled).
-- Performance/metrics ingestion from published content — that is Day 17.
+- Performance/metrics ingestion from published content — that is Day 18.
 
 ## 5. Security
 

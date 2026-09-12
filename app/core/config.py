@@ -20,6 +20,49 @@ class Settings(BaseSettings):
     publish_scheduler_enabled: bool = True
     publish_scheduler_poll_seconds: float = 30.0
 
+    # Database connection pool (see docs/development/progress.md "Platform
+    # Infrastructure" for the sizing formula). Environment-driven so each
+    # deployment tier can size the pool against its own Postgres
+    # max_connections without a code change.
+    db_pool_size: int = 10
+    db_max_overflow: int = 5
+    db_pool_timeout_seconds: float = 30.0
+    db_statement_timeout_ms: int = 30_000
+
+    # Background jobs (arq)
+    job_timeout_seconds: float = 30.0
+    job_max_attempts: int = 3
+    job_retry_backoff_base_seconds: float = 2.0
+
+    # Cache (app/infrastructure/cache)
+    cache_default_ttl_seconds: int = 300
+
+    # Rate limiting (app/infrastructure/ratelimit) — a lower ceiling for
+    # AI-triggering routes than plain CRUD routes; see policy.py.
+    # Off by default: this is foundational middleware, not yet tuned per
+    # route (see docs/development/day-15.md). Staging/production set this
+    # true via env var once real Redis is available; the in-memory SQLite
+    # test suite exercises it directly with a fake Redis instance instead of
+    # flipping it on globally for every existing test.
+    rate_limit_enabled: bool = False
+    rate_limit_window_seconds: int = 60
+    rate_limit_crud_requests_per_window: int = 120
+    rate_limit_ai_requests_per_window: int = 20
+    ai_triggering_route_prefixes: list[str] = Field(
+        default_factory=lambda: [
+            "/briefs",
+            "/drafts",
+            "/variations",
+            "/evaluations",
+        ]
+    )
+
+    # Idempotency-Key handling for job-submission endpoints
+    idempotency_key_ttl_seconds: int = 600
+
+    # Distributed locks (app/infrastructure/locks)
+    lock_default_timeout_seconds: float = 30.0
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

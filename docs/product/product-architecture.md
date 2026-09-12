@@ -23,6 +23,8 @@ The central product question is:
 
 > **What should this specific profile create next, and why?**
 
+Answering that question requires more than storing facts about a profile. It requires **reasoning** over those facts — which is why the LLM is a core reasoning capability of the Understand and Decide stages, not only the Create stage. See **LLM Role in Content Intelligence and Strategy** for the architectural rule that governs this.
+
 This document describes both the product architecture (intelligence, strategy, creation, learning) and the platform architecture (tenancy, security, AI job control, data and operations) that a multi-tenant deployment of it requires. See **Production Readiness Model** for the stages in which those platform requirements must be met.
 
 ---
@@ -89,7 +91,23 @@ It answers:
 
 > **What is happening around this profile, its audience, its market, and its content performance—and what does that mean for what should be created next?**
 
-Content Intelligence contains four major domains.
+## Core Principle
+
+> **Content Intelligence = Data + Deterministic Analysis + LLM Reasoning**
+
+Content Intelligence is not a data store, and it is not an LLM improvising freely on a prompt. It is the combination of three layers, and all three are required:
+
+1. **Structured data** — the facts a profile, its audience, its market, and its performance actually consist of.
+2. **Deterministic analysis** — calculations, thresholds, comparisons, and scores computed by application code against that data.
+3. **LLM reasoning** — interpretation and synthesis of what the data and the deterministic analysis mean, for this specific profile, audience, and goal.
+
+The LLM's job inside Content Intelligence is to answer questions such as:
+
+> "What does this information mean for this specific profile, audience, and goal?"
+
+The LLM must **not** simply generate content from raw signals. Reasoning about meaning and generating execution output are different tasks with different grounding requirements — see **Deterministic vs LLM Responsibilities**.
+
+Content Intelligence contains four major domains. Each domain now has both a data layer and an LLM reasoning layer.
 
 ---
 
@@ -97,7 +115,7 @@ Content Intelligence contains four major domains.
 
 Brand Intelligence represents what the profile is and how it should communicate.
 
-It includes:
+**Data layer** includes:
 
 * identity
 * positioning
@@ -110,6 +128,8 @@ It includes:
 * visual identity
 * USP
 * communication rules
+
+**LLM reasoning layer:** the LLM analyzes the profile's positioning, expertise, voice, tone, topics, and goals to derive strategic brand insights — for example, identifying an underused content pillar relative to stated goals, or a tension between stated positioning and actual topic coverage. This reasoning is grounded in the stored Brand Intelligence data; it does not invent brand facts the profile has not provided.
 
 Brand Intelligence applies equally to businesses and creators.
 
@@ -127,7 +147,7 @@ Example creator:
 
 Audience Intelligence represents who the profile wants to reach and what that audience cares about.
 
-It may contain:
+**Data layer** may contain:
 
 * personas
 * pain points
@@ -141,6 +161,8 @@ It may contain:
 * engagement patterns
 * audience signals
 
+**LLM reasoning layer:** the LLM synthesizes audience questions, pain points, desires, comments, and engagement patterns to identify meaningful audience needs — connecting scattered signals (a recurring question, a cluster of similar objections, an engagement pattern on a format) into a coherent statement of what the audience actually needs next, rather than treating each signal in isolation.
+
 Audience Intelligence evolves as the platform learns from new audience behavior and content performance.
 
 ---
@@ -149,7 +171,7 @@ Audience Intelligence evolves as the platform learns from new audience behavior 
 
 Market Intelligence represents the external environment surrounding the profile.
 
-It may contain:
+**Data layer** may contain:
 
 * topics
 * trends
@@ -160,7 +182,9 @@ It may contain:
 * emerging topics
 * ecosystem changes
 
-Market signals are **inputs into strategy**, not automatic content-generation commands.
+**LLM reasoning layer:** the LLM interprets trends, competitors, formats, and market signals **in the context of the specific profile and audience** — a trend is only meaningful once the LLM has reasoned about whether and how it connects to this profile's positioning and this audience's needs. A trend the LLM cannot connect to profile or audience context is not elevated into strategy.
+
+Market signals remain **inputs into strategy**, never automatic content-generation commands, regardless of how the LLM characterizes them.
 
 ---
 
@@ -168,7 +192,7 @@ Market signals are **inputs into strategy**, not automatic content-generation co
 
 Performance Intelligence represents what the profile has learned from its published content.
 
-It may contain:
+**Data layer** may contain:
 
 * content performance
 * historical baselines
@@ -186,21 +210,127 @@ It may contain:
 * CTA performance
 * audience response
 * creative patterns
-* explanations of why content worked or failed
+
+**LLM reasoning layer:** the LLM analyzes structured performance data and deterministic performance analysis to explain **why** content succeeded or failed, rather than only reporting metrics.
+
+Example:
+
+> "POV tactical videos consistently generate more shares because they simplify complex football concepts while creating a strong opinion-driven perspective."
 
 Performance Intelligence must answer:
 
 > **Why did this content perform the way it did?**
 
-rather than merely displaying raw analytics.
+rather than merely displaying raw analytics. The deterministic analysis (baseline comparison, statistical deltas) is the evidence; the LLM's explanation must be grounded in that evidence, not offered as an unsupported narrative.
 
 Performance learnings become future strategic inputs.
 
 ---
 
+# LLM Role in Content Intelligence and Strategy
+
+The LLM is a core reasoning capability of AI Content Studio, but it must **not** become the entire Intelligence or Strategy system.
+
+The system combines:
+
+* Structured data
+* Deterministic analysis and calculations
+* LLM-based reasoning, interpretation, and synthesis
+
+## Strategy Must Combine All Five Inputs
+
+Strategy must combine:
+
+```text
+Profile + Brand + Audience + Market + Performance + Goals
+```
+
+with LLM reasoning to determine strategic implications. No single input — including a trend or signal on its own — is sufficient to justify a strategic decision.
+
+## The Forbidden Path
+
+The system must **not** implement:
+
+```text
+Trend → LLM → Generate Content
+```
+
+Routing a trend directly through an LLM into generated content is exactly what turns AI Content Studio into a generic AI writer. The LLM's presence in the pipeline does not make this path acceptable — the forbidden path is about what's missing (profile, audience, performance, goals), not about which component the trend passes through.
+
+## The Required Flow
+
+```text
+Trend / Signal
+      +
+Profile
+      +
+Audience
+      +
+Performance
+      +
+Goals
+      ↓
+Content Intelligence
+      +
+LLM Reasoning
+      ↓
+Strategy
+      ↓
+Opportunity
+      ↓
+Content Brief
+      ↓
+Creation
+```
+
+LLM Reasoning sits inside the Content Intelligence → Strategy transition, grounded in the full profile context — never upstream of it, and never as a substitute for it.
+
+## Deterministic vs LLM Responsibilities
+
+**Deterministic system** — use application code and database logic for:
+
+* data storage
+* metrics
+* calculations
+* trend velocity
+* engagement rates
+* filtering
+* thresholds
+* opportunity scoring components
+* validation
+* permissions
+* profile/workspace isolation
+* data lineage
+
+**LLM** — use the LLM for:
+
+* interpretation
+* synthesis
+* pattern recognition
+* strategic reasoning
+* explaining why
+* generating strategic hypotheses
+* connecting multiple intelligence signals
+* contextual recommendations
+* natural-language strategic rationale
+
+The dividing line is not "simple vs. complex" — it is **reproducible computation vs. contextual interpretation**. Anything that must be reproducible, auditable, or gate a workflow decision (a score, a permission check, a lifecycle transition) stays deterministic. Anything that requires understanding what data *means* in context is the LLM's responsibility.
+
+## Architectural Rule
+
+> **The LLM is the reasoning layer, not the source of truth.**
+
+The system's strategic decisions must be grounded in available profile, audience, market, performance, and goal context. An LLM reasoning output that cannot be traced back to stored data or a deterministic calculation is not a valid strategic input — it must be treated as unvalidated narrative, subject to the same discipline described in **Evaluation Validity**.
+
+AI Content Studio's differentiation is not "AI generates content." Its core value is:
+
+> **AI understands the profile, audience, market, and performance, reasons over those signals, decides what content should be created next, and then helps execute that decision.**
+
+---
+
 # Strategy
 
-The Strategy Engine converts Content Intelligence into decisions.
+The Strategy Engine converts Content Intelligence — data, deterministic analysis, and LLM reasoning together — into decisions.
 
 The required strategic flow is:
 
@@ -242,7 +372,7 @@ Brief
 Creation
 ```
 
-Strategy determines **what should be created and why**.
+Strategy determines **what should be created and why**. The "why" is expected to be an LLM-reasoned, context-grounded explanation, not a templated string — see `opportunity_reasoning` under **AI Tasks and AI Capabilities**.
 
 Creation determines **how that strategic decision is executed**.
 
@@ -269,6 +399,8 @@ An opportunity may include:
 * recommended format
 * priority
 * timing
+
+The **opportunity score, relevance, and priority remain deterministic** — computed from signal strength, goal alignment, timing, and accumulated learning, per **Deterministic vs LLM Responsibilities**. The **strategic rationale is an LLM reasoning output** (`opportunity_reasoning`), grounded in the deterministic score components and the Content Intelligence synthesis for that profile — it explains the "why" behind a number the formula already produced, rather than producing the number itself.
 
 The Opportunity Engine prevents blind trend-chasing by evaluating external signals against the profile's:
 
@@ -305,6 +437,8 @@ A brief may contain:
 * audio direction
 * duration
 * success metrics
+
+The brief's structural fields (objective, platform, pillar, format, success metrics) are composed deterministically from the opportunity and profile context. LLM enrichment (`brief_enrichment`) may improve the language of the angle, hook direction, or key message, but per **Deterministic First, AI Enriched**, a complete deterministic brief must exist independent of whether enrichment succeeds.
 
 The Content Brief is required before major content creation workflows.
 
@@ -358,16 +492,27 @@ The architecture distinguishes between an **AI Task** and an **AI Capability**.
 
 An AI Task describes **what the product wants the AI to do**.
 
-Examples include:
+AI tasks support both **strategic reasoning** and **execution** use cases. They are AI tasks, not separate strategy engines — there remains **one universal Content Intelligence + Strategy Engine** for all ContentProfile types.
 
+**Strategic reasoning tasks:**
+
+* `brand_analysis`
+* `audience_analysis`
+* `market_analysis`
+* `performance_analysis`
+* `strategic_synthesis`
+* `opportunity_reasoning`
+
+**Execution tasks:**
+
+* `brief_enrichment`
+* `content_drafting`
+* `hook_generation`
+* `caption_generation`
+* `content_evaluation`
 * research
-* strategy
-* opportunity analysis
 * content concept generation
-* performance reasoning
-* hook generation
 * script generation
-* caption generation
 * image generation
 * video generation
 * UGC generation
@@ -392,9 +537,7 @@ Examples include:
 * audio generation
 * long context
 
-Tasks and capabilities are separate architectural concepts.
-
-This allows the system to determine which model is appropriate for a particular task.
+Tasks and capabilities are separate architectural concepts. This allows the system to determine which model is appropriate for a particular task — a `strategic_synthesis` task requires a reasoning-capable model with structured output and long context (it may need to reason over an entire profile's accumulated intelligence); a `hook_generation` task requires fast, cheap text generation.
 
 ---
 
@@ -405,17 +548,23 @@ The platform is designed to use different AI models for different jobs.
 For example:
 
 ```text
-Research
-→ Research-capable model
-
-Strategy
+Brand / Audience / Market Analysis
 → Reasoning-capable LLM
 
-Content Concepts
-→ Generative LLM
+Strategic Synthesis
+→ Reasoning-capable LLM (long context)
+
+Opportunity Reasoning
+→ Reasoning-capable LLM
 
 Performance Reasoning
 → Reasoning-capable LLM
+
+Research
+→ Research-capable model
+
+Content Concepts / Drafting
+→ Generative LLM
 
 Image Creation
 → Image Generation Model
@@ -475,9 +624,9 @@ The Router is infrastructure.
 
 It does not make product strategy decisions.
 
-The Strategy Engine decides what content should be created.
+The Strategy Engine — Content Intelligence's data, deterministic analysis, and LLM reasoning together — decides what content should be created.
 
-The AI infrastructure determines which model is best suited to execute a particular task.
+The AI infrastructure determines which model is best suited to execute a particular task, whether that task is strategic reasoning or creative execution.
 
 ---
 
@@ -618,6 +767,7 @@ Goals
 Performance
         ↓
 Content Intelligence
+    (Data + Deterministic Analysis + LLM Reasoning)
         ↓
 Strategy
         ↓
@@ -630,7 +780,7 @@ AI Creation
 Content
 ```
 
-This separation is a core architectural principle.
+This separation is a core architectural principle. Adding LLM reasoning to Content Intelligence does not weaken this separation — it strengthens the Strategy stage's output without collapsing Strategy and Creation into a single AI call.
 
 ---
 
@@ -654,7 +804,7 @@ The system measures:
 * completion
 * other platform-specific metrics
 
-Performance Intelligence then compares results against appropriate historical baselines.
+Performance Intelligence then compares results against appropriate historical baselines (deterministic).
 
 It identifies patterns such as:
 
@@ -668,7 +818,7 @@ It identifies patterns such as:
 * underperforming formats
 * performance gaps
 
-The system must explain **why** performance changed, using evidence from the available data.
+The system must explain **why** performance changed, using evidence from the available data — the explanation is an LLM reasoning output grounded in the deterministic pattern detection, per **Performance Intelligence** above.
 
 ---
 
@@ -678,6 +828,7 @@ The Content OS continuously learns from published content.
 
 ```text
 Content Intelligence
+   (Data + Deterministic Analysis + LLM Reasoning)
         ↓
 Strategy
         ↓
@@ -754,7 +905,7 @@ Market Intelligence
     ↓
 Performance Intelligence
     ↓
-Strategy
+Strategy (LLM-reasoned, data-grounded)
     ↓
 Content Creation
 ```
@@ -796,7 +947,7 @@ Market Intelligence
     ↓
 Performance Intelligence
     ↓
-Strategy
+Strategy (LLM-reasoned, data-grounded)
     ↓
 Content Creation
 ```
@@ -846,7 +997,7 @@ Until identity and membership exist, the system is an internal or controlled-bet
 
 # Platform Security Boundary
 
-Security is part of the product architecture because the Content OS holds a profile's strategy, audience knowledge, and performance history — proprietary information to its owner.
+Security is part of the product architecture because the Content OS holds a profile's strategy, audience knowledge, and performance history — proprietary information to its owner. It also holds LLM-reasoned strategic conclusions about that profile, which are as sensitive as the raw data they're derived from.
 
 The platform boundary must define:
 
@@ -866,7 +1017,7 @@ Development-friendly defaults (open docs, permissive CORS, unvalidated config) a
 
 # AI Execution and Job Control
 
-AI is infrastructure, and infrastructure needs operational controls.
+AI is infrastructure, and infrastructure needs operational controls. This applies equally to strategic reasoning tasks (`brand_analysis`, `strategic_synthesis`, `opportunity_reasoning`) and execution tasks (`content_drafting`, image/video generation) — a reasoning call that hangs is as disruptive to the product as a generation call that hangs.
 
 Long-running or provider-dependent AI work belongs in background jobs rather than inside request handling:
 
@@ -893,7 +1044,7 @@ Required controls:
 * token and cost accounting per task
 * per-workspace quotas and usage tracking
 
-Deterministic paths remain the safety net: when all providers fail, the system produces the deterministic result and records the degraded source rather than failing the workflow.
+Deterministic paths remain the safety net: when all providers fail, the system produces the deterministic result and records the degraded source rather than failing the workflow. For strategic reasoning tasks specifically, the deterministic fallback is the un-enriched deterministic analysis (e.g., the scored opportunity without a synthesized rationale, or a templated rationale) — the workflow must never block on LLM reasoning succeeding.
 
 Synchronous AI calls are acceptable only for short, bounded enrichment where a deterministic fallback already guarantees a complete result.
 
@@ -934,17 +1085,17 @@ The Content OS must be observable and recoverable:
 
 # Evaluation Validity
 
-Quality evaluation (of briefs, drafts, and variations) is a product claim, not only a computation.
+Quality evaluation (of briefs, drafts, and variations) is a product claim, not only a computation. The same discipline applies to **strategic reasoning outputs** — brand/audience/market synthesis, opportunity rationale, and performance explanations are also claims about reality, not just generated text, and are held to the same standard.
 
-Deterministic heuristics provide a reliable technical fallback, but a score is only trustworthy once it is shown to track human judgment. Before evaluation scores drive significant product decisions (ranking, auto-selection, gating), they must be validated against a labeled benchmark comparing:
+Deterministic heuristics provide a reliable technical fallback, but a score — or a reasoned explanation — is only trustworthy once it is shown to track human judgment. Before evaluation scores or LLM-reasoned strategic conclusions drive significant product decisions (ranking, auto-selection, gating, being presented to the user as "why"), they must be validated against a labeled benchmark comparing:
 
-* human reviewer scores
+* human reviewer scores / judgments
 * deterministic scores
-* AI-enriched scores
+* AI-enriched scores or reasoning
 * user acceptance and revision behavior
 * downstream content performance
 
-Unvalidated scores may inform and rank, but must not silently decide.
+Unvalidated scores and unvalidated reasoning may inform and rank, but must not silently decide.
 
 ---
 
@@ -952,7 +1103,7 @@ Unvalidated scores may inform and rank, but must not silently decide.
 
 ## 1. Content Intelligence is the Central Brain
 
-All major strategic decisions should be grounded in Content Intelligence.
+All major strategic decisions should be grounded in Content Intelligence — data, deterministic analysis, and LLM reasoning together.
 
 ---
 
@@ -976,7 +1127,7 @@ The platform decides what should be created before AI generates the content.
 
 ## 5. Trends Are Inputs, Not Commands
 
-A trend alone must never automatically trigger content generation.
+A trend alone must never automatically trigger content generation — including when an LLM is the component that would otherwise turn it into content. Presence of LLM reasoning in the pipeline does not exempt a signal from evaluation against profile, audience, goals, and performance.
 
 ---
 
@@ -1025,7 +1176,7 @@ without changing the core Content Intelligence and Strategy architecture.
 
 Analytics show what happened.
 
-Performance Intelligence explains what the results suggest and what should be tested next.
+Performance Intelligence explains what the results suggest and what should be tested next — an LLM reasoning output grounded in deterministic pattern detection.
 
 ---
 
@@ -1063,13 +1214,13 @@ The server establishes who the caller is and which workspaces they belong to. A 
 
 ## 15. AI Work Is Controlled Work
 
-Every AI task has a timeout, a retry policy, a cost accounting, a failure state, and a deterministic fallback. Long-running generation runs as a durable background job, not inside a request.
+Every AI task — strategic reasoning or creative execution — has a timeout, a retry policy, a cost accounting, a failure state, and a deterministic fallback. Long-running generation runs as a durable background job, not inside a request.
 
 ---
 
 ## 16. Deterministic First, AI Enriched
 
-Every AI-assisted output has a complete deterministic form. Enrichment may improve a result but must never be able to destroy it or block the workflow.
+Every AI-assisted output has a complete deterministic form. Enrichment may improve a result but must never be able to destroy it or block the workflow. This applies to strategic rationale exactly as it applies to a generated caption.
 
 ---
 
@@ -1082,6 +1233,12 @@ A workflow commits once, at its unit-of-work boundary, so that a multi-step oper
 ## 18. Tenancy, Security, and Operability Are Architecture
 
 Authentication, quotas, observability, backups, and environment-specific configuration are part of the product architecture, on the same footing as intelligence and strategy — not later additions to a finished system.
+
+---
+
+## 19. The LLM Is a Reasoning Layer, Not the Source of Truth
+
+Content Intelligence and Strategy decisions must be grounded in stored profile, audience, market, performance, and goal data plus deterministic analysis of that data. The LLM interprets and synthesizes; it does not originate facts, does not compute scores that gate workflow decisions, and any LLM-reasoned conclusion presented as strategic insight must be traceable back to the data or calculation that grounds it.
 
 ---
 
@@ -1105,23 +1262,33 @@ Authentication, quotas, observability, backups, and environment-specific configu
         ▼                    ▼                    ▼
       BRAND              AUDIENCE              MARKET
   INTELLIGENCE         INTELLIGENCE         INTELLIGENCE
+   (data +               (data +               (data +
+    LLM reasoning)        LLM reasoning)        LLM reasoning)
         │                    │                    │
         └────────────────────┼────────────────────┘
                              │
                              ▼
                     PERFORMANCE INTELLIGENCE
+                     (deterministic analysis +
+                      LLM reasoning: explains WHY)
                              │
                              ▼
                    CONTENT INTELLIGENCE
+              (Data + Deterministic Analysis +
+                      LLM Reasoning)
                              │
                              ▼
                      STRATEGY ENGINE
                              │
                              ▼
                   OPPORTUNITY ENGINE
+              (deterministic score + ranking;
+               LLM-reasoned strategic rationale)
                              │
                              ▼
                      CONTENT BRIEF
+              (deterministic structure;
+               LLM-enriched language)
                              │
                              ▼
                     AI ORCHESTRATOR
@@ -1179,7 +1346,7 @@ Requires:
 * PostgreSQL integration tests run against a real instance
 * database backups with tested restore
 * CI running tests, migrations, linting, and security checks
-* AI timeouts, retries, cost limits, and provider failure handling
+* AI timeouts, retries, cost limits, and provider failure handling — for both reasoning and execution tasks
 * environment-gated API documentation
 
 ### Stage 2 — Paid Beta
@@ -1194,6 +1361,7 @@ Adds:
 * a PostgreSQL staging deployment
 * audit logs for significant workspace actions
 * API versioning and backward-compatibility tests
+* initial validation of LLM-reasoned strategic outputs against human judgment, per **Evaluation Validity**
 
 ### Stage 3 — Scale
 
@@ -1216,7 +1384,7 @@ The ordering principle: **security and platform reliability precede additional c
 
 # Core Architectural Statement
 
-> **AI Content Studio is an AI-powered Content Operating System that understands a profile, decides what content opportunity matters, creates a strategic brief, uses the best available AI models to execute it, measures the result, and continuously learns what to create next.**
+> **AI Content Studio is an AI-powered Content Operating System that understands a profile, reasons over its brand, audience, market, and performance signals using both deterministic analysis and LLM reasoning, decides what content opportunity matters, creates a strategic brief, uses the best available AI models to execute it, measures the result, and continuously learns what to create next.**
 
 Short positioning:
 

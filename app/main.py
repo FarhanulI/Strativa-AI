@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.logging import RequestIdMiddleware, configure_logging
+from app.infrastructure.ratelimit import RateLimitMiddleware
 from app.services.publish_scheduler import PublishScheduler
 
 publish_scheduler = PublishScheduler(poll_interval_seconds=settings.publish_scheduler_poll_seconds)
@@ -33,6 +34,7 @@ def create_app() -> FastAPI:
     )
 
     app.add_middleware(RequestIdMiddleware)
+    app.add_middleware(RateLimitMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.backend_cors_origins,

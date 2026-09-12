@@ -2,7 +2,7 @@
 
 ## Current Status
 
-Days 1 through 16 establish the first complete strategic content loop:
+Days 1 through 17 establish the first complete strategic content loop:
 
 ```text
 Understand
@@ -337,7 +337,60 @@ total                1.00
   Python attribute as `evaluation_metadata` while retaining the database
   column name `metadata`.
 
-## Day 15 - Content Library
+## Day 15 - Scalable Platform Foundation
+
+A pure infrastructure day: no product/domain feature was built. Everything
+here is reusable plumbing for Days 16+ (see
+`docs/development/day-15.md` for the full spec).
+
+- New `app/infrastructure/` module (`jobs/`, `cache/`, `ratelimit/`,
+  `locks/`), injected into domain services rather than imported ad hoc.
+  Domain services never import Redis or an arq client directly.
+- Background jobs: `AIJob` model / `ai_jobs` table (`id`, `task_type`,
+  `profile_id`, `status` — `queued`/`running`/`succeeded`/`failed`/
+  `timed_out` — `attempts`, `submitted_at`, `started_at`, `finished_at`,
+  `error`, `result_ref`), indexed on `(profile_id, status)` and `(status,
+  submitted_at)`. `app.infrastructure.jobs.service.submit_job` creates the
+  row and enqueues an arq job in one call, using the row's id as arq's
+  `_job_id`. The arq worker entrypoint `execute_ai_job`
+  (`app/workers/settings.py`, run via
+  `uv run arq app.workers.settings.WorkerSettings`, a process separate from
+  the API) dispatches to a `task_type` → handler registry, enforces a
+  per-job `asyncio.wait_for` timeout, and retries with exponential backoff
+  (`base * 2^(attempt-1)`) up to a bounded attempt count before finalizing
+  as `failed` or `timed_out`. No product task type is registered yet — only
+  an `infrastructure.echo` placeholder handler exists for tests.
+- `CacheService` (`get_or_compute`, `invalidate`, `invalidate_prefix`) wraps
+  Redis with namespaced keys and SCAN-based (never blocking `KEYS`) prefix
+  invalidation. Not wired into any real endpoint yet — later days use it.
+- Redis-backed sliding-window rate limiting middleware, applied per
+  best-effort user identifier and per workspace (see "Platform
+  Infrastructure" below for why "per user" is a placeholder), with a lower
+  default ceiling for a configurable set of AI-triggering route prefixes
+  than for plain CRUD routes. Ships with `rate_limit_enabled` defaulting to
+  `False` (see "Platform Infrastructure").
+- Idempotency-Key dedup (`app.infrastructure.jobs.idempotency`) for
+  job-submission endpoints: a Redis `SET NX EX` claim, scoped per operation,
+  so a client retry within the TTL window is rejected rather than
+  submitting a duplicate job. No job-submission endpoint exists yet to wire
+  it into — it is reusable infrastructure for Days 17+.
+- `DistributedLock` (`app/infrastructure/locks/service.py`) wraps redis-py's
+  own `Lock` (`SET NX PX` plus a token-checked, safe release), defaulting to
+  a single non-blocking acquisition attempt; a `try_lock` context manager
+  yields whether it was acquired. Available for a future scheduler that
+  needs to coordinate across more than one instance.
+- Explicit, environment-driven SQLAlchemy async engine pool sizing
+  (`db_pool_size`, `db_max_overflow`, `db_pool_timeout_seconds`) and a
+  connection-level Postgres `statement_timeout`
+  (`db_statement_timeout_ms`), applied only for the `postgresql` driver —
+  SQLite (the test suite) is left on library defaults, which don't support
+  either concept the same way.
+
+See "Platform Infrastructure" below for the pool-sizing formula, cache key
+conventions, and the rate-limit-default rationale, so later days can
+reference it instead of re-explaining it.
+
+## Day 16 - Content Library
 
 Implemented a workspace-scoped retrieval layer over existing `ContentDraft`
 records with filtering, pagination, sorting, and lineage retrieval:
@@ -364,10 +417,10 @@ records with filtering, pagination, sorting, and lineage retrieval:
 - Kept Content Library retrieval-only and separate from draft editing,
   publishing, and performance analytics concerns.
 
-Day 15 intentionally reuses `ContentDraft` as the canonical content record.
+Day 16 intentionally reuses `ContentDraft` as the canonical content record.
 No `LibraryContent` or duplicate content-item model was introduced.
 
-## Day 16 - Publishing Foundation
+## Day 17 - Publishing Foundation
 
 Introduced the first publishing record, closing the "Publish" stage of the
 core product loop with manual confirmation, scheduled publishing, and
@@ -418,12 +471,12 @@ schedule cancellation as the MVP mechanisms:
 - Workspace/profile ownership enforced identically to draft endpoints, with
   404 for any ownership-chain mismatch.
 
-Day 16 intentionally does not implement a general job/task queue, retry-on-
+Day 17 intentionally does not implement a general job/task queue, retry-on-
 failure logic for the (still manual/no-op) platform publish call, retracting
 an already-published item, or performance metrics ingestion — performance
-ingestion from published content is Day 17.
+ingestion from published content is Day 18.
 
-## Architecture After Day 16
+## Architecture After Day 17
 
 ```text
 Workspace
@@ -470,6 +523,117 @@ Router
 Routers handle HTTP concerns, services own business rules and ownership
 validation, and repositories handle persistence and queries.
 
+Alongside this domain tree, Day 15 added `ai_jobs` as a parallel
+infrastructure table (FK to `ContentProfile.id`, but not part of the
+Intelligence/Strategy/Creation tree above) and the `app/infrastructure/`
+module described below.
+
+## Platform Infrastructure
+
+Reference material for Days 16+ so they can build on this instead of
+re-explaining it. Full spec: `docs/development/day-15.md`.
+
+### Job queue
+
+- **Library**: `arq` (already a project dependency prior to Day 15), chosen
+  over Celery because the codebase is async-native end to end (FastAPI +
+  SQLAlchemy async) and had no prior Celery conventions to preserve.
+- **Worker entrypoint**: `uv run arq app.workers.settings.WorkerSettings`,
+  a process separate from `uvicorn app.main:app`.
+- **Status table**: `ai_jobs` — see the Day 15 summary above for columns
+  and indexes.
+- **Retry/backoff**: bounded by `job_max_attempts` (default 3); backoff is
+  `job_retry_backoff_base_seconds * 2^(attempt-1)` (default base 2s, so
+  2s / 4s / 8s between attempts). Per-job execution timeout is
+  `job_timeout_seconds` (default 30s), enforced with `asyncio.wait_for`
+  around the dispatched handler.
+- **Handler registration**: `app.infrastructure.jobs.registry.
+  register_handler(task_type, handler)`. No product task type is
+  registered as of Day 15.
+
+### Database connection pool sizing
+
+Environment-driven settings (`db_pool_size`, `db_max_overflow`,
+`db_pool_timeout_seconds`, `db_statement_timeout_ms`), applied only when
+`database_url` is a `postgresql` URL (SQLite, used by the test suite,
+doesn't support the same pool/timeout semantics and is left on defaults).
+
+Sizing formula:
+
+```text
+(app instances) x (db_pool_size + db_max_overflow) <= postgres max_connections - headroom
+```
+
+Current defaults — `db_pool_size=10`, `db_max_overflow=5` — are sized for a
+small number of app instances against a default-ish managed Postgres
+`max_connections` (100), leaving headroom for the migration runner, the
+separate worker process(es), and manual/admin connections:
+
+```text
+instances x (10 + 5) <= 100 - headroom
+```
+
+At `headroom ~= 25`, that supports up to 5 app instances
+(5 x 15 = 75 <= 75). Re-derive this per deployment tier against that
+tier's actual `max_connections` rather than assuming these defaults —
+they are a starting point, not a validated production value.
+
+Statement timeout: `db_statement_timeout_ms` (default 30000ms), set via
+asyncpg `connect_args={"server_settings": {"statement_timeout": "..."}}`
+at connection time.
+
+### Cache key conventions
+
+`CacheService` (not wired into any endpoint yet) uses colon-separated,
+namespaced keys scoped to the entity they describe:
+
+```text
+profile:{profile_id}:<facet>          e.g. profile:{id}:brand
+profile:{profile_id}:<facet>:list     e.g. profile:{id}:opportunities:list
+```
+
+`invalidate_prefix("profile:{profile_id}:")` drops every cached read for
+one profile in a single call via non-blocking `SCAN` (never `KEYS`).
+Default TTL is `cache_default_ttl_seconds` (300s) unless a call site
+passes its own.
+
+### Rate limiting
+
+Sliding-window counter (Redis sorted sets), applied per best-effort user
+identifier (`X-User-Id` header, falling back to client address — there is
+no real authenticated-user concept in this codebase yet) and per
+`workspace_id` query parameter when a route carries one. Route
+classification is by path-prefix substring match against
+`ai_triggering_route_prefixes` (default: `/briefs`, `/drafts`,
+`/variations`, `/evaluations`) — anything else is CRUD. Defaults:
+`rate_limit_crud_requests_per_window=120`,
+`rate_limit_ai_requests_per_window=20`, `rate_limit_window_seconds=60`.
+
+**`rate_limit_enabled` defaults to `False`.** Flipping it on globally by
+default would have made every existing test that drives the live `app`
+over HTTP depend on a reachable Redis, none of which is available in this
+development environment. Staging/production set it `true` via env var once
+Redis is actually deployed there; the middleware, policy, and limiter are
+fully implemented and covered by tests against a fake Redis client — only
+the default is off pending a real Redis and real per-route tuning.
+
+### Idempotency keys
+
+`app.infrastructure.jobs.idempotency.claim_idempotency_key(redis, scope,
+idempotency_key, ttl_seconds)` — a `SET NX EX` claim scoped per operation
+name, `idempotency_key_ttl_seconds` default 600s. No job-submission
+endpoint exists yet to call it from; it's ready for Days 17+.
+
+### Distributed locks
+
+`app.infrastructure.locks.service.DistributedLock` wraps redis-py's `Lock`
+(`SET NX PX`, safe token-checked release), default a single non-blocking
+acquisition attempt (`lock_default_timeout_seconds=30`). `try_lock(redis,
+name)` is the non-blocking convenience wrapper. Not yet used by the Day 17
+publish scheduler (which today is a single-poller, single-table design
+that doesn't need cross-instance coordination) — available if a future
+scheduler needs it.
+
 ## Cross-Cutting Guarantees
 
 - Workspace isolation is checked through the full parent ownership chain.
@@ -513,17 +677,42 @@ Day 14 evaluation verification completed with:
 - Response field and finding structure tests passing.
 - No editor diagnostics in the touched evaluation files.
 
-Day 15 content library verification completed with:
+Day 15 platform infrastructure verification completed with:
+
+- 17 infrastructure tests passing: cache get/set/invalidate/invalidate_prefix
+  (3), distributed lock acquire/release/contention/try_lock (3), Redis
+  idempotency-key claim/scope-isolation (3), rate-limit sliding-window
+  threshold/reset plus a live-middleware 429 test (2), job submission,
+  success, forced-failure-then-retry-exhaustion, and timeout-then-terminal
+  paths plus unknown-handler lookup (5), and simulated connection-pool
+  exhaustion raising a bounded `TimeoutError` rather than hanging or
+  crashing (1).
+- Full 233-test repository regression suite passing in this verification
+  run — no existing test was changed to accommodate Day 15; the global
+  rate-limit middleware defaults to disabled specifically so it doesn't
+  require every existing HTTP-driven test to reach a live Redis.
+- Ruff checks and format checks clean for touched Day 15 files.
+- Migration chain validated with a single head (`o8p9q0r1s2`).
+- No real Redis, Postgres, or Docker daemon was available in this
+  development environment; Redis-backed tests use `fakeredis` (with the
+  `lupa` Lua backend, needed for redis-py's `Lock` safe-release script) and
+  `AIJob` persistence uses the project's existing SQLite test-database
+  convention. The arq worker function was exercised directly as a
+  coroutine rather than through a live `arq.worker.Worker` loop against a
+  real Redis, for the same reason — documented in `docs/development/day-15.md`
+  rather than silently substituted.
+
+Day 16 content library verification completed with:
 
 - 6 content library tests passing.
 - Filter, pagination, search, and lineage retrieval coverage passing.
 - Cross-profile and cross-workspace isolation coverage passing.
 - Full repository regression suite passing in this verification run.
-- Ruff checks clean for touched Day 15 Python files.
+- Ruff checks clean for touched Day 16 Python files.
 - Repo-wide Ruff check still reports pre-existing unrelated violations outside
-  Day 15 files.
+  Day 16 files.
 
-Day 16 publishing verification completed with:
+Day 17 publishing verification completed with:
 
 - 14 published content tests passing: publish success (`ready` and `approved`
   drafts), ineligible-status rejection, schedule creation, past-`scheduled_at`
@@ -534,31 +723,41 @@ Day 16 publishing verification completed with:
   filtering, lineage retrieval, and cross-workspace/cross-profile isolation on
   retrieval.
 - Full repository regression suite passing in this verification run.
-- Ruff checks and format checks clean for touched Day 16 Python files.
+- Ruff checks and format checks clean for touched Day 17 Python files.
 - Migration chain validated with a single head (`n7o8p9q0r1`).
 
 ## Known Limitations and Intentionally Deferred Work
 
-The following are intentionally outside Days 1-16:
+The following are intentionally outside Days 1-17:
 
-- A general job/task queue system (the publish scheduler is a narrow poller
-  against one table, not arq/Redis/Celery/Kafka infrastructure).
+- Any product feature actually submitting a job through the Day 15 job
+  queue — the infrastructure (arq worker, `ai_jobs` table, retry/backoff,
+  timeout) exists, but no `task_type` handler is registered for a real AI
+  task yet, and the Day 17 publish scheduler still deliberately remains its
+  own narrow single-table poller rather than routing through the queue.
+- `CacheService` wired into any real read path, and the rate limiter/
+  idempotency-key helpers wired into any real endpoint (all built and
+  tested in isolation per Day 15, `rate_limit_enabled` defaults `False`).
 - Retry-on-failure logic for the actual platform publish call, and retracting
   an already-published item.
 - Real OAuth flows and real Facebook, Instagram, TikTok, YouTube, LinkedIn, or
   X publishing API calls (`SocialPlatformAdapter.publish` remains a
   manual/no-op placeholder).
-- Performance metrics ingestion from published content (Day 17).
+- Performance metrics ingestion from published content (Day 18).
 - OAuth and external account connection flows.
 - Image, video, audio, voice, and UGC generation.
 - Full script generation and asset assembly.
 - Remix and content transformation engines.
-- Autonomous agents, queues, and worker jobs.
+- Autonomous agents and multi-agent orchestration.
 - RAG, embeddings, and vector databases.
 - Microservices or distributed event infrastructure.
 - New AI providers beyond the current provider abstraction and Gemini path.
 - Trend detection and autonomous market research.
 - A generic analytics dashboard.
+- A real authenticated-user identity layer (the Day 15 rate limiter's
+  "per user" bucket is a header/client-address placeholder, not
+  authorization — see docs/product/product-architecture.md "Identity,
+  Tenancy, and Authorization").
 
 Known repository-level quality notes:
 
@@ -572,13 +771,22 @@ Known repository-level quality notes:
 - Some existing endpoints classify certain errors by `ValueError` message,
   matching the established project convention rather than using dedicated
   exception types.
+- Day 15's Redis-backed infrastructure is tested against `fakeredis`, and
+  the arq worker function is tested as a directly-invoked coroutine rather
+  than through a live `arq.worker.Worker` loop — no real Redis instance or
+  Docker daemon was available in this development environment. A real-Redis
+  integration pass (and a real arq worker end-to-end run) has not been
+  performed, mirroring the project's existing SQLite-vs-Postgres testing
+  convention rather than a new gap.
 
 ## Scope Confirmation
 
-Days 1-16 implement the strategic foundation, intelligence inputs, opportunity
+Days 1-17 implement the strategic foundation, intelligence inputs, opportunity
 evaluation, brief composition, deterministic and AI-assisted draft creation,
 creative variations, quality evaluation, workspace-scoped content library
-retrieval, and manual/scheduled publish confirmation with cancellation. No
-general job queue infrastructure, real social platform API integrations,
-OAuth flows, advanced media generation, or autonomous strategy features were
-added.
+retrieval, manual/scheduled publish confirmation with cancellation, and (Day
+15) reusable platform infrastructure — background jobs, caching, rate
+limiting, idempotency, distributed locks, and sized connection pooling — with
+no product feature yet consuming it. No real social platform API
+integrations, OAuth flows, advanced media generation, autonomous strategy
+features, or real authenticated-user identity were added.

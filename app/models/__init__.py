@@ -44,6 +44,7 @@ from app.models.offer import Offer
 from app.models.performance_analysis import PerformanceAnalysis, PerformanceClassification
 from app.models.performance_insight import PerformanceInsight
 from app.models.product import Product
+from app.models.published_content import PublishedContent, PublishMethod, PublishStatus
 from app.models.service import Service
 from app.models.topic import Topic
 from app.models.workspace import Workspace
@@ -90,6 +91,9 @@ __all__ = [
     "PainPoint",
     "Persona",
     "Product",
+    "PublishedContent",
+    "PublishMethod",
+    "PublishStatus",
     "Service",
     "Topic",
     "Workspace",

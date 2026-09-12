@@ -6,6 +6,27 @@ class SocialPlatformAdapter(Protocol):
     async def fetch_posts(self) -> list[dict[str, Any]]: ...
     async def fetch_post(self, external_post_id: str) -> dict[str, Any]: ...
     async def fetch_metrics(self, external_post_id: str) -> dict[str, Any]: ...
+    async def publish(self, *, draft: dict[str, Any], platform: str) -> dict[str, Any]: ...
+
+
+class ManualPlatformAdapter:
+    """No-op adapter used for manual publish confirmation.
+
+    Real platform publishing (OAuth, API calls) stays a future implementation
+    behind this same `SocialPlatformAdapter` contract.
+    """
+
+    async def fetch_posts(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    async def fetch_post(self, external_post_id: str) -> dict[str, Any]:
+        raise NotImplementedError
+
+    async def fetch_metrics(self, external_post_id: str) -> dict[str, Any]:
+        raise NotImplementedError
+
+    async def publish(self, *, draft: dict[str, Any], platform: str) -> dict[str, Any]:
+        return {"status": "published", "external_url": None}
 
 
 def normalize_performance(

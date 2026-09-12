@@ -23,6 +23,8 @@ The central product question is:
 
 > **What should this specific profile create next, and why?**
 
+This document describes both the product architecture (intelligence, strategy, creation, learning) and the platform architecture (tenancy, security, AI job control, data and operations) that a multi-tenant deployment of it requires. See **Production Readiness Model** for the stages in which those platform requirements must be met.
+
 ---
 
 # Universal Content Profile
@@ -810,6 +812,142 @@ but does not replace universal intelligence.
 
 ---
 
+# Identity, Tenancy, and Authorization
+
+The Content OS is a multi-tenant system. Tenancy is therefore an architectural layer, not an endpoint detail.
+
+The required chain is:
+
+```text
+Authenticated User
+        ↓
+Workspace Membership
+        ↓
+Role / Permissions
+        ↓
+Workspace
+        ↓
+ContentProfile
+        ↓
+Resource
+```
+
+Rules:
+
+* The caller's identity is established by the server from an authenticated credential (session, JWT, or OAuth token).
+* Workspace context is **derived from membership**, never trusted from a client-supplied identifier.
+* Every resource lookup validates the full ownership chain, and a mismatch at any level returns **404** so cross-tenant existence is never leaked.
+* Roles determine which workspace actions a member may perform (read, author, approve, administer, billing).
+* Identifier-based isolation is not authorization; it is only the last check after identity and membership have been established.
+
+Until identity and membership exist, the system is an internal or controlled-beta workspace, not a public multi-tenant product.
+
+---
+
+# Platform Security Boundary
+
+Security is part of the product architecture because the Content OS holds a profile's strategy, audience knowledge, and performance history — proprietary information to its owner.
+
+The platform boundary must define:
+
+* authentication on every non-public route
+* rate limiting and request-size limits
+* abuse protection on AI-backed endpoints
+* explicit, environment-specific CORS policy
+* security headers
+* structured exception handling with safe (non-leaking) error responses
+* validated secrets and configuration per environment
+* environment-gated API documentation
+* audit logs for significant workspace actions
+
+Development-friendly defaults (open docs, permissive CORS, unvalidated config) are acceptable only in development environments and must differ in staging and production.
+
+---
+
+# AI Execution and Job Control
+
+AI is infrastructure, and infrastructure needs operational controls.
+
+Long-running or provider-dependent AI work belongs in background jobs rather than inside request handling:
+
+```text
+Request
+   ↓
+Job Record (queued)
+   ↓
+Worker
+   ↓
+AI Orchestrator → AI Router → Provider
+   ↓
+Job Record (succeeded | failed | timed out)
+   ↓
+Client polls / is notified
+```
+
+Required controls:
+
+* per-task timeouts, retries, and backoff
+* circuit breaking and provider fallback on repeated failure
+* durable job status, failure state, and retry visibility
+* idempotency protection for generation requests
+* token and cost accounting per task
+* per-workspace quotas and usage tracking
+
+Deterministic paths remain the safety net: when all providers fail, the system produces the deterministic result and records the degraded source rather than failing the workflow.
+
+Synchronous AI calls are acceptable only for short, bounded enrichment where a deterministic fallback already guarantees a complete result.
+
+---
+
+# Data and Transaction Architecture
+
+Persistence behavior is part of the architecture, not an implementation detail.
+
+Principles:
+
+* **Transaction ownership sits at the request / unit-of-work boundary.** Services flush during orchestration; the boundary commits or rolls back once, so a multi-step workflow cannot leave partial state.
+* **Integrity errors are normalized consistently** into domain-level conflicts rather than surfacing raw database errors.
+* **Counts are computed in the database**, not by loading rows into memory and measuring them.
+* **Loading is explicit and response-shaped** — eager loading only where a response needs it, and never automatic loading of large child collections.
+* **Every potentially large collection is paginated.**
+* **Indexes are designed for actual access paths** (foreign keys used in filters, profile + created_at, workspace-scoped lookups, status and lifecycle filtering, performance by profile and publication date) and validated against query plans.
+* **Connection pooling, statement timeouts, SSL, and health checks are configured per environment.**
+
+The production database is PostgreSQL. Fast in-memory SQLite tests are a development convenience and do not validate PostgreSQL enum behavior, JSONB semantics, partial unique indexes, concurrency, or migrations — so a PostgreSQL integration pipeline runs migrations and tests against a real instance before release.
+
+---
+
+# Operational Readiness
+
+The Content OS must be observable and recoverable:
+
+* metrics, tracing, and structured logging across request, job, and AI layers
+* alerting on provider failure rates, job backlogs, latency, and error budgets
+* database backups with tested restores
+* CI running tests, migrations, linting, and security checks
+* staged environments (development, staging, production) with environment-specific configuration
+* API versioning with backward-compatibility tests
+* data retention and archival policies
+* load and concurrency testing before scale
+
+---
+
+# Evaluation Validity
+
+Quality evaluation (of briefs, drafts, and variations) is a product claim, not only a computation.
+
+Deterministic heuristics provide a reliable technical fallback, but a score is only trustworthy once it is shown to track human judgment. Before evaluation scores drive significant product decisions (ranking, auto-selection, gating), they must be validated against a labeled benchmark comparing:
+
+* human reviewer scores
+* deterministic scores
+* AI-enriched scores
+* user acceptance and revision behavior
+* downstream content performance
+
+Unvalidated scores may inform and rank, but must not silently decide.
+
+---
+
 # Architectural Principles
 
 ## 1. Content Intelligence is the Central Brain
@@ -917,9 +1055,46 @@ The underlying Strategy Engine remains the same.
 
 ---
 
+## 14. Authorization Is Derived, Never Supplied
+
+The server establishes who the caller is and which workspaces they belong to. A client-supplied workspace or ownership identifier is an input to validate, never a grant of access.
+
+---
+
+## 15. AI Work Is Controlled Work
+
+Every AI task has a timeout, a retry policy, a cost accounting, a failure state, and a deterministic fallback. Long-running generation runs as a durable background job, not inside a request.
+
+---
+
+## 16. Deterministic First, AI Enriched
+
+Every AI-assisted output has a complete deterministic form. Enrichment may improve a result but must never be able to destroy it or block the workflow.
+
+---
+
+## 17. Transactions Are Owned at the Boundary
+
+A workflow commits once, at its unit-of-work boundary, so that a multi-step operation never leaves partially applied state.
+
+---
+
+## 18. Tenancy, Security, and Operability Are Architecture
+
+Authentication, quotas, observability, backups, and environment-specific configuration are part of the product architecture, on the same footing as intelligence and strategy — not later additions to a finished system.
+
+---
+
 # Final Product Architecture
 
 ```text
+                    AUTHENTICATED USER
+                             │
+                             ▼
+                   WORKSPACE MEMBERSHIP
+                    (role / permissions)
+                             │
+                             ▼
                          WORKSPACE
                              │
                              ▼
@@ -950,6 +1125,8 @@ The underlying Strategy Engine remains the same.
                              │
                              ▼
                     AI ORCHESTRATOR
+                  (job queue + retries,
+                   timeouts, quotas, cost)
                              │
                              ▼
                        AI ROUTER
@@ -986,6 +1163,57 @@ The underlying Strategy Engine remains the same.
 
 ---
 
+# Production Readiness Model
+
+The architecture progresses through readiness stages. A feature is not "done" for a stage until it meets that stage's platform requirements.
+
+### Stage 1 — Controlled Beta (internal / invited workspaces)
+
+Requires:
+
+* authentication and workspace membership authorization
+* server-derived workspace context
+* validated production secrets and configuration
+* rate limiting and request-size limits
+* structured exception handling and safe error responses
+* PostgreSQL integration tests run against a real instance
+* database backups with tested restore
+* CI running tests, migrations, linting, and security checks
+* AI timeouts, retries, cost limits, and provider failure handling
+* environment-gated API documentation
+
+### Stage 2 — Paid Beta
+
+Adds:
+
+* AI-heavy operations moved to background jobs with status and retry visibility
+* workspace quotas and usage tracking
+* database-side counts and reviewed query plans and indexes
+* standardized transaction ownership
+* metrics, tracing, and alerting
+* a PostgreSQL staging deployment
+* audit logs for significant workspace actions
+* API versioning and backward-compatibility tests
+
+### Stage 3 — Scale
+
+Adds:
+
+* social platform adapters and ingestion jobs
+* publishing and scheduling
+* durable performance synchronization and content→performance attribution
+* model/provider fallback policies
+* caching for stable intelligence reads
+* data retention and archival policies
+* load and concurrency testing
+* tenant-level usage isolation and billing enforcement
+
+Until the full loop — connected accounts, publishing, measurement, and automated learning — is operational, the system is a strategy and intelligence workspace rather than a complete Content Operating System.
+
+The ordering principle: **security and platform reliability precede additional creative-generation capability.**
+
+---
+
 # Core Architectural Statement
 
 > **AI Content Studio is an AI-powered Content Operating System that understands a profile, decides what content opportunity matters, creates a strategic brief, uses the best available AI models to execute it, measures the result, and continuously learns what to create next.**
@@ -993,3 +1221,5 @@ The underlying Strategy Engine remains the same.
 Short positioning:
 
 > **AI that figures out what content you should create next.**
+
+The architectural priority order is: prove the intelligence → strategy → brief → creation → learning loop, then make it safe, controlled, and operable for many tenants, and only then broaden creative generation.

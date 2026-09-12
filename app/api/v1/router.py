@@ -11,6 +11,7 @@ from app.api.v1.content_briefs import router as content_briefs_router
 from app.api.v1.content_draft_variations import router as content_draft_variations_router
 from app.api.v1.content_drafts import router as content_drafts_router
 from app.api.v1.content_evaluations import router as content_evaluations_router
+from app.api.v1.content_library import router as content_library_router
 from app.api.v1.content_opportunities import router as content_opportunities_router
 from app.api.v1.content_profiles import router as content_profiles_router
 from app.api.v1.desires import router as desires_router
@@ -22,6 +23,7 @@ from app.api.v1.pain_points import router as pain_points_router
 from app.api.v1.performance import router as performance_router
 from app.api.v1.personas import router as personas_router
 from app.api.v1.products import router as products_router
+from app.api.v1.published_content import router as published_content_router
 from app.api.v1.services import router as services_router
 from app.api.v1.topics import router as topics_router
 from app.api.v1.workspaces import router as workspaces_router
@@ -35,6 +37,8 @@ api_router.include_router(content_briefs_router)
 api_router.include_router(content_drafts_router)
 api_router.include_router(content_draft_variations_router)
 api_router.include_router(content_evaluations_router)
+api_router.include_router(content_library_router)
+api_router.include_router(published_content_router)
 api_router.include_router(audience_intelligence_router)
 api_router.include_router(personas_router)
 api_router.include_router(pain_points_router)

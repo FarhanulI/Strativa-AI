@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     llm_provider: str = "gemini"
     llm_model: str = "gemini-configured"
     gemini_api_key: str | None = None
+    publish_scheduler_enabled: bool = True
+    publish_scheduler_poll_seconds: float = 30.0
 
     model_config = SettingsConfigDict(
         env_file=".env",

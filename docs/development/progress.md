@@ -2,7 +2,7 @@
 
 ## Current Status
 
-Days 1 through 14 establish the first complete strategic content loop:
+Days 1 through 16 establish the first complete strategic content loop:
 
 ```text
 Understand
@@ -10,6 +10,7 @@ Understand
   -> Brief
   -> Create
   -> Evaluate
+  -> Publish (manual confirmation)
   -> Measure / Learn (foundation established)
 ```
 
@@ -336,7 +337,93 @@ total                1.00
   Python attribute as `evaluation_metadata` while retaining the database
   column name `metadata`.
 
-## Architecture After Day 14
+## Day 15 - Content Library
+
+Implemented a workspace-scoped retrieval layer over existing `ContentDraft`
+records with filtering, pagination, sorting, and lineage retrieval:
+
+- Added read-only library endpoints:
+  - list drafts in a workspace with optional filters
+  - retrieve a single draft with `ContentBrief` and `ContentOpportunity`
+    lineage summary
+- Added library filters for:
+  - `profile_id`
+  - `platform`
+  - `format`
+  - `status` (`draft`, `ready`, `approved`, `archived`)
+  - created-at date range (`created_after`, `created_before`)
+- Added simple full-text-like search over draft `title`, `hook`, and
+  `caption` using SQL contains/ILIKE semantics.
+- Preserved existing pagination and sorting conventions:
+  - `skip` / `limit` pagination
+  - sort by `created_at` or `updated_at` with `asc` / `desc`
+- Implemented through Router -> Service -> Repository layering without adding
+  a new domain model.
+- Enforced workspace/profile ownership boundaries with 404 responses for
+  inaccessible resources.
+- Kept Content Library retrieval-only and separate from draft editing,
+  publishing, and performance analytics concerns.
+
+Day 15 intentionally reuses `ContentDraft` as the canonical content record.
+No `LibraryContent` or duplicate content-item model was introduced.
+
+## Day 16 - Publishing Foundation
+
+Introduced the first publishing record, closing the "Publish" stage of the
+core product loop with manual confirmation, scheduled publishing, and
+schedule cancellation as the MVP mechanisms:
+
+- `PublishedContent` model recording that a `ContentDraft` went live (or will):
+  `draft_id`, `profile_id`, `platform`, `external_url` (nullable),
+  `scheduled_at` (nullable), `published_at` (nullable until actually
+  published), `publish_method` (`manual` implemented; `api` reserved for a
+  future real integration), `status` (`scheduled`, `published`, `failed`,
+  `retracted`, `cancelled`), `created_at`. A composite index on
+  `(status, scheduled_at)` backs the scheduler's due-row query.
+- `PublishedContentService.publish_draft` and `.schedule_draft` both validate
+  the full workspace/profile ownership chain and require the draft's status
+  to be `ready` or `approved` (rejecting any other status with a `409
+  Conflict`, distinct from the `404` ownership-chain failures), without
+  mutating any of the draft's own strategic fields (hook, body, caption,
+  status, brief link). `schedule_draft` additionally rejects a past
+  `scheduled_at` with `422`.
+- `PublishedContentService.cancel_schedule` moves a `scheduled` record to
+  `cancelled` if it hasn't fired yet; cancelling anything else (already
+  published, failed, retracted, or cancelled) returns `409`. Retracting an
+  already-published item is intentionally out of scope.
+- `PublishedContentService.promote_due` (backed by
+  `PublishedContentRepository.claim_due`) is the operation an in-process
+  `PublishScheduler` (`app/services/publish_scheduler.py`) calls on a
+  configurable interval (default 30s), started/stopped via the FastAPI
+  `lifespan`. It performs one atomic `UPDATE ... WHERE status = 'scheduled'
+  ... RETURNING` to claim due rows before calling the adapter, so the same
+  row can never be double-processed even if more than one app instance ran
+  the poller. This is a narrow, single-purpose poller, not a general job
+  queue — no arq/Redis, no persisted job records.
+- Extended the Day 9 `SocialPlatformAdapter` Protocol with a `publish(...)`
+  method and added a `ManualPlatformAdapter` no-op implementation — reusing the
+  existing adapter contract rather than introducing a new one, shared by both
+  the immediate-publish and scheduled-promotion code paths. No OAuth flow or
+  real Facebook/Instagram/TikTok/etc. API call was implemented.
+- API: `POST /profiles/{profile_id}/drafts/{draft_id}/publish`,
+  `POST /profiles/{profile_id}/drafts/{draft_id}/schedule`,
+  `POST /profiles/{profile_id}/published/{published_id}/cancel`,
+  `GET /profiles/{profile_id}/published` (filterable by `platform` and
+  `status`, paginated), and `GET /profiles/{profile_id}/published/{published_id}`
+  returning full lineage back through draft -> brief -> opportunity.
+- Alembic migrations add the `published_content` table (FKs to
+  `content_drafts` and `content_profiles`, both `CASCADE`) and a follow-up
+  migration adding the `scheduled`/`cancelled` statuses, the `scheduled_at`
+  column, and the composite index.
+- Workspace/profile ownership enforced identically to draft endpoints, with
+  404 for any ownership-chain mismatch.
+
+Day 16 intentionally does not implement a general job/task queue, retry-on-
+failure logic for the (still manual/no-op) platform publish call, retracting
+an already-published item, or performance metrics ingestion — performance
+ingestion from published content is Day 17.
+
+## Architecture After Day 16
 
 ```text
 Workspace
@@ -366,7 +453,8 @@ Workspace
                           |
                           +-- Draft Variations
                           +-- Content Evaluations
-                                +-- Evaluation Findings
+                          |     +-- Evaluation Findings
+                          +-- Published Content
 ```
 
 The request flow remains:
@@ -402,7 +490,8 @@ validation, and repositories handle persistence and queries.
 
 The project contains focused tests for workspaces, profiles, brand, business
 context, audience intelligence, market intelligence, opportunities,
-performance, AI infrastructure, briefs, drafts, variations, and evaluations.
+performance, AI infrastructure, briefs, drafts, variations, evaluations, and
+published content.
 
 Day 13 was verified with:
 
@@ -424,16 +513,42 @@ Day 14 evaluation verification completed with:
 - Response field and finding structure tests passing.
 - No editor diagnostics in the touched evaluation files.
 
-The full repository regression suite and repo-wide Ruff checks were not rerun
-after the final Day 14 fixes because the command was skipped during the final
-verification pass. They should be run before treating Day 14 as fully released.
+Day 15 content library verification completed with:
+
+- 6 content library tests passing.
+- Filter, pagination, search, and lineage retrieval coverage passing.
+- Cross-profile and cross-workspace isolation coverage passing.
+- Full repository regression suite passing in this verification run.
+- Ruff checks clean for touched Day 15 Python files.
+- Repo-wide Ruff check still reports pre-existing unrelated violations outside
+  Day 15 files.
+
+Day 16 publishing verification completed with:
+
+- 14 published content tests passing: publish success (`ready` and `approved`
+  drafts), ineligible-status rejection, schedule creation, past-`scheduled_at`
+  rejection, ineligible-draft scheduling rejection, `promote_due` promoting
+  only due items, the atomic claim rejecting a second promotion attempt on an
+  already-claimed row, cancel success and its exclusion from promotion,
+  cancelling a non-scheduled item rejected, cancel ownership isolation, list
+  filtering, lineage retrieval, and cross-workspace/cross-profile isolation on
+  retrieval.
+- Full repository regression suite passing in this verification run.
+- Ruff checks and format checks clean for touched Day 16 Python files.
+- Migration chain validated with a single head (`n7o8p9q0r1`).
 
 ## Known Limitations and Intentionally Deferred Work
 
-The following are intentionally outside Days 1-14:
+The following are intentionally outside Days 1-16:
 
-- Publishing and scheduling.
-- Facebook, Instagram, TikTok, YouTube, LinkedIn, or X API integrations.
+- A general job/task queue system (the publish scheduler is a narrow poller
+  against one table, not arq/Redis/Celery/Kafka infrastructure).
+- Retry-on-failure logic for the actual platform publish call, and retracting
+  an already-published item.
+- Real OAuth flows and real Facebook, Instagram, TikTok, YouTube, LinkedIn, or
+  X publishing API calls (`SocialPlatformAdapter.publish` remains a
+  manual/no-op placeholder).
+- Performance metrics ingestion from published content (Day 17).
 - OAuth and external account connection flows.
 - Image, video, audio, voice, and UGC generation.
 - Full script generation and asset assembly.
@@ -460,8 +575,10 @@ Known repository-level quality notes:
 
 ## Scope Confirmation
 
-Days 1-14 implement the strategic foundation, intelligence inputs, opportunity
+Days 1-16 implement the strategic foundation, intelligence inputs, opportunity
 evaluation, brief composition, deterministic and AI-assisted draft creation,
-creative variations, and quality evaluation. No future-day publishing,
-advanced media generation, external social integrations, or autonomous
-strategy features were added.
+creative variations, quality evaluation, workspace-scoped content library
+retrieval, and manual/scheduled publish confirmation with cancellation. No
+general job queue infrastructure, real social platform API integrations,
+OAuth flows, advanced media generation, or autonomous strategy features were
+added.

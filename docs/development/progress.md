@@ -473,6 +473,62 @@ single migration head (`q0r1s2t3u4`), and an independent architecture review
 ownership-bypass bug class, cross-tenant `workspace_id` corruption, and
 LLM-fabricated lineage — none found.
 
+### 2026-09-14 amendment — Cold-Start / Activation Mode (post-implementation patch)
+
+Both the Day 16 (Intelligence Reasoning Layer) and Day 17 (Content
+Intelligence Synthesis Engine) work above were patched after shipping,
+because new creator profiles were being incorrectly treated as
+data-insufficient despite already having enough profile-stated context
+(stated positioning, stated topics/expertise, stated target audience) for a
+full recommendation immediately after onboarding — only Performance
+Intelligence is legitimately unavailable for a brand-new profile, since no
+content has been published yet.
+
+- **Day 16 patch:** `audience_analysis` and `market_analysis` grounding
+  (`app/services/intelligence/grounding.py`) now also accepts onboarding
+  -stated profile data (stated target-audience description, stated topics,
+  stated expertise, stated positioning) as valid grounding when no
+  persona/pain-point or topic/market-signal history exists yet — the
+  previous minimum-record-count check treated "no accumulated signal
+  history" and "no data at all" as the same case. A new `grounding_basis`
+  column (`stated` | `observed` | `mixed`) on `AudienceAnalysis` and
+  `MarketAnalysis` records which kind of data grounded the analysis.
+  Migration `s2t3u4v5w6` adds the column and backfills every pre-existing
+  `ai`/`ai_fallback` row to `observed` (the stated-data grounding path did
+  not exist before this patch, so no pre-existing row could have been
+  `stated`); `insufficient_data` rows are left `NULL`.
+- **Day 17 patch:** `strategic_synthesis` (`app/content_intelligence/`) now
+  distinguishes genuine insufficient data (Brand, Audience, or Market also
+  thin/missing — unchanged `generation_source=insufficient_data` fallback)
+  from cold start (Brand, Audience, and Market all present and grounded,
+  Performance absent specifically because the profile has zero
+  `PublishedContent`/`ContentPerformance` rows — verified directly by query,
+  never inferred from Performance analysis being null alone). Cold start
+  runs as a full `generation_source=ai` call with an activation-framed
+  prompt addendum (`COLD_START_PROMPT_ADDENDUM` in
+  `app/content_intelligence/reasoner.py`) that frames the absence of
+  performance history as expected and asks for an opportunity/activation
+  -focused first-content recommendation, never fabricated performance data.
+  A new `cold_start` boolean column on `ContentIntelligenceSynthesis`
+  (migration `t3u4v5w6x7`, default `false`, backfilled `false` for every
+  pre-existing row — historical rows are not retroactively reclassified)
+  records this. `is_stale`/lazy-regeneration behavior is unchanged: once a
+  profile publishes its first content, the existing staleness mechanism
+  naturally triggers regeneration that produces `cold_start=false`. Day 18's
+  `opportunity_reasoning` was not modified by this patch — it consumes
+  `ContentIntelligenceSynthesis` as-is and will pick up `cold_start`
+  automatically.
+
+Regression coverage for the genuine-insufficient-data case was confirmed
+preserved: the full pre-existing Day 16/17 test suite passes unchanged (no
+test's asserted outcome changed), plus new tests cover stated-only
+grounding (`test_stated_only_grounding_for_new_profile`), cold-start
+synthesis (`test_cold_start_synthesis_runs_as_full_ai_generation`), and
+cold start flipping to `false` after first publish
+(`test_cold_start_becomes_false_after_first_publish`). Full suite: 279
+tests passing (275 pre-existing + 4 new), Ruff check/format clean, two new
+migration heads (`s2t3u4v5w6`, `t3u4v5w6x7`) chained after `r1s2t3u4v5`.
+
 ## Architecture After Day 17
 
 ```text

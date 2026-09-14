@@ -15,6 +15,23 @@ SYSTEM_PROMPT = (
     "indicate for interpretive claims."
 )
 
+# Appended only when `cold_start` is True: Brand/Audience/Market are all
+# grounded and Performance is absent specifically because the profile has
+# published nothing yet (see app.content_intelligence.grounding). This is
+# the activation-framing requirement from the day-16/17 cold-start patch --
+# the summary must read as an inspiring first-content recommendation, not a
+# degraded or apologetic result.
+COLD_START_PROMPT_ADDENDUM = (
+    "This profile has not published any content yet, so it has no Performance "
+    "Intelligence -- that is expected and normal for a brand-new profile, not a "
+    "limitation or a data gap, and must not be framed as one. Do not apologize for "
+    "or caveat the absence of performance history. Instead, produce an opportunity/"
+    "activation-focused summary describing what a strong first piece of content "
+    "should be, grounded only in the available Brand, Audience, and Market "
+    "analyses. Never fabricate, imply, or reference performance data, metrics, or "
+    "results that do not exist."
+)
+
 PROMPT_VERSION = "strategic_synthesis_v1"
 
 
@@ -29,10 +46,14 @@ class SynthesisReasoner:
         self.router = router
         self.prompt_version = PROMPT_VERSION
 
-    async def reason(self, *, context: dict[str, Any]) -> AIResult:
+    async def reason(self, *, context: dict[str, Any], cold_start: bool = False) -> AIResult:
+        system_prompt = SYSTEM_PROMPT
+        if cold_start:
+            system_prompt = f"{SYSTEM_PROMPT} {COLD_START_PROMPT_ADDENDUM}"
+
         request = AIRequest(
             task=AITask.STRATEGIC_SYNTHESIS,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             user_prompt=str(context),
             response_model=ContentIntelligenceSynthesisLLMResult,
             required_capabilities={

@@ -43,6 +43,7 @@ def _serialize(analysis) -> dict:
             insights=analysis.insights,
             grounded_on=analysis.grounded_on,
             generation_source=analysis.generation_source.value,
+            grounding_basis=getattr(analysis, "grounding_basis", None),
             is_current=analysis.is_current,
             analysis_version=analysis.analysis_version,
             generated_at=analysis.generated_at,

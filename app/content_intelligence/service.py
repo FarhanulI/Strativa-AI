@@ -130,6 +130,9 @@ async def generate_synthesis(
     repository = ContentIntelligenceSynthesisRepository(session)
 
     if not grounding.sufficient:
+        # Cold start implies Brand+Audience+Market are all available, which
+        # already makes `sufficient` True -- so this branch is always a
+        # genuine data gap, never cold start.
         synthesis = ContentIntelligenceSynthesis(
             profile_id=profile_id,
             summary=grounding.fallback_summary,
@@ -137,11 +140,14 @@ async def generate_synthesis(
             supporting_analyses=grounding.supporting_analyses,
             generation_source=AnalysisGenerationSource.INSUFFICIENT_DATA,
             is_stale=False,
+            cold_start=False,
         )
     else:
         reasoner = SynthesisReasoner(router)
         try:
-            ai_result = await reasoner.reason(context=grounding.context)
+            ai_result = await reasoner.reason(
+                context=grounding.context, cold_start=grounding.cold_start
+            )
             summary = ai_result.output.summary
             key_themes = ai_result.output.key_themes
             generation_source = AnalysisGenerationSource.AI
@@ -157,6 +163,7 @@ async def generate_synthesis(
             supporting_analyses=grounding.supporting_analyses,
             generation_source=generation_source,
             is_stale=False,
+            cold_start=grounding.cold_start,
         )
 
     await repository.clear_current(profile_id)

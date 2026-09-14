@@ -115,6 +115,57 @@ picture for downstream strategy work.
   duplicate enum type, plus the partial unique index and standard
   profile/generated_at/is_current/is_stale indexes. Reversible.
 
+### 7.3.1 Cold-Start / Activation Mode (amendment, 2026-09-14)
+
+Patched after initial implementation. The original fallback logic treated
+"fewer than two available component analyses" as one undifferentiated
+`insufficient_data` case, which incorrectly penalized brand-new creator
+profiles once Day 16's stated-data grounding amendment (see
+`docs/development/day-16.md`) let Brand, Audience, and Market analysis all
+generate immediately after onboarding — Performance Intelligence is the
+only domain legitimately unavailable for a profile that hasn't published
+anything yet, and that absence is expected, not a data gap.
+
+`gather_synthesis_grounding` (`app/content_intelligence/grounding.py`) now
+distinguishes two different reasons Performance can be absent from the four
+inputs:
+
+1. **Genuine insufficient data** — Brand, Audience, or Market analysis is
+   also thin or missing. Unchanged: `generation_source=insufficient_data`,
+   no AI call made.
+2. **Cold start** — Brand, Audience, and Market analyses are all present
+   and adequately grounded (`{"brand", "audience", "market"}` is a subset
+   of `available_domains`), and Performance is absent. This is verified
+   directly by counting the profile's `PublishedContent` and
+   `ContentPerformance` rows — both must be zero — never inferred from
+   Performance analysis being null alone, since a profile could also be
+   missing Performance analysis for other reasons (published content with
+   no `PerformanceInsight` generated yet, which is a real gap, not cold
+   start).
+
+Cold start does not change the `sufficient` threshold (three domains
+already satisfies `component_count >= 2`), but it does change how
+generation runs: `SynthesisReasoner.reason()` takes a `cold_start` bool and,
+when true, appends `COLD_START_PROMPT_ADDENDUM` to the system prompt —
+framing the absence of performance history as expected rather than a
+limitation, asking for an opportunity/activation-focused summary of what a
+strong first piece of content should be (grounded only in Brand/Audience/
+Market), and explicitly forbidding fabricating or implying performance data
+that doesn't exist. `generate_synthesis` always runs the full AI call in
+this case — cold start never short-circuits to a deterministic fallback the
+way genuine insufficient data does.
+
+A new `cold_start` boolean column on `ContentIntelligenceSynthesis` records
+which case produced the row (`False` for both genuine-insufficient-data and
+ordinary warm-profile rows). `is_stale`/lazy-regeneration behavior is
+unchanged: once a profile publishes its first content (a `PerformanceInsight`
+becomes available), the existing staleness mechanism naturally triggers
+regeneration that produces `cold_start=False` with Performance included.
+
+Day 18's `opportunity_reasoning` already consumes `ContentIntelligenceSynthesis`
+and will pick up `cold_start` automatically once this column exists — Day
+18's code itself was not modified by this amendment.
+
 ### 7.4 Explicitly Out of Scope (confirmed not built)
 
 - Feeding synthesis into `ContentOpportunity` scoring or
@@ -153,6 +204,23 @@ enqueue-then-serve-fresh-then-serve-from-cache round trip through a real
 invalidation, workspace/profile ownership isolation (404), and the service's
 `get_or_enqueue` returning the current row without enqueuing when it isn't
 stale.
+
+**Cold-Start / Activation Mode amendment testing** (added 2026-09-14, same
+file): `test_cold_start_synthesis_runs_as_full_ai_generation` seeds Brand,
+Audience, and Market analysis with zero `PublishedContent`/
+`ContentPerformance` and asserts `generation_source=ai` (not
+`insufficient_data`), `cold_start=True`, `supporting_analyses` has exactly
+3 entries, the summary reads as an activation/first-content
+recommendation (keyword check, not an exact-string match), and the system
+prompt actually sent to the AI Router contains the cold-start framing
+addendum. `test_cold_start_becomes_false_after_first_publish` regenerates
+the same profile's synthesis after seeding its first
+`PerformanceInsight` and asserts `cold_start` flips to `False` with all 4
+domains now in `supporting_analyses`.
+`test_insufficient_data_fallback_with_fewer_than_two_components` (existing,
+extended) now also asserts `cold_start is False` for the genuine
+-insufficient-data case, confirming cold start and insufficient data can
+never both be true for the same row.
 
 Fixing this feature surfaced one required change to existing Day 16 tests:
 `tests/test_intelligence_analysis.py`'s autouse Redis-fake fixture patched

@@ -2,9 +2,10 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.content_performance import ContentPerformance
 from app.models.intelligence_analysis import (
     AnalysisGenerationSource,
     AudienceAnalysis,
@@ -12,6 +13,7 @@ from app.models.intelligence_analysis import (
     MarketAnalysis,
 )
 from app.models.performance_insight import PerformanceInsight
+from app.models.published_content import PublishedContent
 from app.repositories.intelligence_analysis import IntelligenceAnalysisRepository
 
 # An `insufficient_data` component analysis carries only a templated
@@ -45,6 +47,7 @@ class SynthesisGrounding:
     supporting_analyses: list[str] = field(default_factory=list)
     context: dict[str, Any] = field(default_factory=dict)
     fallback_summary: str = ""
+    cold_start: bool = False
 
 
 async def gather_synthesis_grounding(session: AsyncSession, profile_id: UUID) -> SynthesisGrounding:
@@ -94,6 +97,30 @@ async def gather_synthesis_grounding(session: AsyncSession, profile_id: UUID) ->
     component_count = len(available_domains)
     sufficient = component_count >= 2
 
+    # Cold start is a distinct reason for Performance's absence, not a data
+    # gap: Brand, Audience, and Market are all present and adequately
+    # grounded, and the profile simply hasn't published anything yet. It is
+    # verified directly against PublishedContent/ContentPerformance rather
+    # than inferred from "performance" being in `missing_domains` alone,
+    # because a profile could also be missing performance analysis for
+    # other reasons (e.g. published content but no PerformanceInsight
+    # generated yet) that must not be framed as "no content yet."
+    cold_start = False
+    if "performance" in missing_domains and {"brand", "audience", "market"}.issubset(
+        set(available_domains)
+    ):
+        published_count = await session.scalar(
+            select(func.count())
+            .select_from(PublishedContent)
+            .where(PublishedContent.profile_id == profile_id)
+        )
+        performance_count = await session.scalar(
+            select(func.count())
+            .select_from(ContentPerformance)
+            .where(ContentPerformance.profile_id == profile_id)
+        )
+        cold_start = (published_count or 0) == 0 and (performance_count or 0) == 0
+
     if not sufficient:
         fallback_summary = (
             f"Only {component_count} of 4 intelligence domains "
@@ -101,12 +128,22 @@ async def gather_synthesis_grounding(session: AsyncSession, profile_id: UUID) ->
             "Strategic synthesis requires at least two grounded component analyses "
             f"(missing: {', '.join(missing_domains)})."
         )
+    elif cold_start:
+        fallback_summary = (
+            "Brand, Audience, and Market analysis are all grounded, but AI-generated "
+            "synthesis is currently unavailable. This profile has not published any "
+            "content yet, so no performance history is expected. Review the Brand/"
+            "Audience/Market analyses directly for what a strong first piece of "
+            "content should be."
+        )
     else:
         fallback_summary = (
             f"{component_count} of 4 intelligence domains ({', '.join(available_domains)}) have "
             "grounded analysis, but AI-generated synthesis is currently unavailable. Review "
             "each domain's analysis directly for strategic context."
         )
+
+    context["cold_start"] = cold_start
 
     return SynthesisGrounding(
         sufficient=sufficient,
@@ -116,4 +153,5 @@ async def gather_synthesis_grounding(session: AsyncSession, profile_id: UUID) ->
         supporting_analyses=supporting_analyses,
         context=context,
         fallback_summary=fallback_summary,
+        cold_start=cold_start,
     )

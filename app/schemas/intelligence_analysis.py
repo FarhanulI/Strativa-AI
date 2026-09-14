@@ -26,6 +26,7 @@ class IntelligenceAnalysisResponse(BaseModel):
     insights: list[dict[str, Any]]
     grounded_on: list[str]
     generation_source: str
+    grounding_basis: str | None = None
     is_current: bool
     analysis_version: str
     generated_at: datetime

@@ -17,6 +17,19 @@ class AnalysisGenerationSource(StrEnum):
     INSUFFICIENT_DATA = "insufficient_data"
 
 
+class GroundingBasis(StrEnum):
+    """What kind of data a domain analysis was grounded on: onboarding-stated
+    profile data with no observed signal history yet (STATED), accumulated
+    signal/record data (OBSERVED), or both (MIXED). Only meaningful for a
+    `sufficient` grounding result — an `insufficient_data` analysis leaves
+    this null, since no basis was actually used to reason.
+    """
+
+    STATED = "stated"
+    OBSERVED = "observed"
+    MIXED = "mixed"
+
+
 class IntelligenceAnalysisMixin:
     """Shared columns for a domain's stored LLM-reasoning result.
 
@@ -66,10 +79,18 @@ class AudienceAnalysis(IntelligenceAnalysisMixin, Base):
         Index("ix_audience_analysis_profile_id_is_current", "profile_id", "is_current"),
     )
 
+    grounding_basis: Mapped[GroundingBasis | None] = mapped_column(
+        SqlEnum(GroundingBasis), nullable=True
+    )
+
 
 class MarketAnalysis(IntelligenceAnalysisMixin, Base):
     __tablename__ = "market_analysis"
     __table_args__ = (
         Index("ix_market_analysis_profile_id_generated_at", "profile_id", "generated_at"),
         Index("ix_market_analysis_profile_id_is_current", "profile_id", "is_current"),
+    )
+
+    grounding_basis: Mapped[GroundingBasis | None] = mapped_column(
+        SqlEnum(GroundingBasis), nullable=True
     )

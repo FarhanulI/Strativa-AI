@@ -79,6 +79,60 @@ regeneration, ownership isolation (404).
 Tests + regression pass, all three domains verified against a shared
 parameterized test harness, ruff clean, migration reversible.
 
+## Amendment (2026-09-14) — grounding_basis and stated-data grounding
+
+Patched after initial implementation: the original `insufficient_data`
+threshold treated "no accumulated signal/record history yet" the same as
+"no data at all," which incorrectly penalized brand-new creator profiles —
+immediately after onboarding, a profile already has stated positioning,
+stated target audience, and stated topics/expertise, which are valid
+grounding data independent of live engagement or published-content
+history.
+
+- **Audience Intelligence scope**: `audience_analysis` grounding now also
+  accepts onboarding-stated profile data — the profile's stated
+  description/goals, and the `AudienceIntelligence` root's stated
+  summary/geography/language/demographics/psychographics — as sufficient
+  grounding when no persona/pain-point history exists yet. The minimum
+  remains "at least one persona and one pain point" **or** at least one
+  stated field; it is no longer "signal records only."
+- **Market Intelligence scope**: `market_analysis` grounding now also
+  accepts the profile's stated topics/expertise/positioning (and the
+  `MarketIntelligence` root's stated `summary`, when a root exists) as
+  sufficient grounding when no topic/market-signal history exists yet. A
+  `MarketIntelligence` root is no longer required to exist at all for
+  market analysis to run — the profile's own stated fields are enough on
+  their own.
+- **`grounding_basis` column**: `AudienceAnalysis` and `MarketAnalysis`
+  (not `BrandAnalysis` — its grounding data was already always
+  profile-stated) each gained a `grounding_basis` column
+  (`stated` | `observed` | `mixed`), set from
+  `GroundingResult.grounding_basis` in `app/services/intelligence/grounding.py`.
+  `grounded_on` records which stated fields were used via `stated:<field>`
+  entries (e.g. `stated:profile.positioning`) alongside any real record
+  ids. Migration `s2t3u4v5w6` adds the column and backfills every
+  pre-existing `ai`/`ai_fallback` row to `observed` (the stated-data path
+  did not exist before this patch); `insufficient_data` rows are left
+  `NULL`.
+- This does not change behavior for any profile that already has real
+  signal data (`observed` sufficiency is checked first and is unaffected)
+  — it only expands what counts as sufficient for a profile that doesn't
+  have any yet.
+
+### Testing (added by this amendment)
+
+- `test_stated_only_grounding_for_new_profile` (parametrized over
+  audience/market, `tests/test_intelligence_analysis.py`): a profile with
+  zero persona/pain-point or topic/market-signal history but onboarding
+  -stated fields set (description/goals for audience; topics/expertise/
+  positioning for market) generates with `generation_source=ai`,
+  `grounding_basis=stated`, and `grounded_on` containing at least one
+  `stated:`-prefixed entry.
+- Full pre-existing Day 16 regression suite (insufficient-data fallback,
+  grounded generation, AI-failure fallback, regeneration on material data
+  change, ownership isolation) passes unchanged — none of those tests seed
+  stated-only profile fields, so their outcomes are untouched.
+
 ## Numbering note
 
 This work was scoped by its author as "Day 16." At the time it was

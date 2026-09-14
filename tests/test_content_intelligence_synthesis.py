@@ -235,6 +235,97 @@ async def test_insufficient_data_fallback_with_fewer_than_two_components(
     assert synthesis.generation_source == AnalysisGenerationSource.INSUFFICIENT_DATA
     assert synthesis.key_themes == []
     assert synthesis.is_current is True
+    # Genuinely thin Brand/Audience/Market data is never cold start, even
+    # though Performance is also absent here.
+    assert synthesis.cold_start is False
+
+
+async def _seed_three_domains_no_performance(
+    session: AsyncSession, profile: ContentProfile
+) -> None:
+    await _seed_brand(session, profile)
+    await _seed_audience(session, profile)
+    await _seed_market(session, profile)
+    await session.refresh(profile)
+    await generate_domain_analysis(session, "brand", profile.id, _fake_domain_router())
+    await generate_domain_analysis(session, "audience", profile.id, _fake_domain_router())
+    await generate_domain_analysis(session, "market", profile.id, _fake_domain_router())
+    await session.commit()
+
+
+def _fake_activation_synthesis_router(prompts: list[str], *, failure: bool = False) -> AIRouter:
+    class FakeProvider:
+        provider = "gemini"
+
+        async def generate_structured(self, *, system_prompt, **kwargs):
+            prompts.append(system_prompt)
+            if failure:
+                raise AIProviderRequestError("provider unavailable")
+            return ContentIntelligenceSynthesisLLMResult(
+                summary=(
+                    "This profile hasn't published anything yet, so here is what a "
+                    "strong first piece of content should look like, grounded in "
+                    "your stated positioning, audience, and current market opportunity."
+                ),
+                key_themes=["first content opportunity", "activation"],
+            )
+
+    providers = ProviderRegistry()
+    providers.register("gemini", FakeProvider)
+    models = ModelRegistry(
+        [
+            AIModelConfig(
+                provider="gemini",
+                model_name="fake-model",
+                capabilities=frozenset(
+                    {
+                        AICapability.STRUCTURED_OUTPUT,
+                        AICapability.REASONING,
+                        AICapability.LONG_CONTEXT,
+                    }
+                ),
+            )
+        ]
+    )
+    return AIRouter(models, providers)
+
+
+async def test_cold_start_synthesis_runs_as_full_ai_generation(db_session: AsyncSession) -> None:
+    """Brand+Audience+Market present and grounded, zero PublishedContent /
+    ContentPerformance: this must run as a full generation_source=ai call
+    (never insufficient_data) and the summary must read as an activation
+    recommendation, not a degraded/apologetic result."""
+    _, profile = await _create_profile(db_session, "synthesis-cold-start")
+    await _seed_three_domains_no_performance(db_session, profile)
+
+    prompts: list[str] = []
+    synthesis = await generate_synthesis(
+        db_session, profile.id, _fake_activation_synthesis_router(prompts)
+    )
+
+    assert synthesis.generation_source == AnalysisGenerationSource.AI
+    assert synthesis.cold_start is True
+    assert len(synthesis.supporting_analyses) == 3  # brand + audience + market only
+    summary_lower = synthesis.summary.lower()
+    assert "first piece of content" in summary_lower or "first content" in summary_lower
+    assert any("has not published any content yet" in p for p in prompts)
+
+
+async def test_cold_start_becomes_false_after_first_publish(db_session: AsyncSession) -> None:
+    _, profile = await _create_profile(db_session, "synthesis-cold-to-warm")
+    await _seed_three_domains_no_performance(db_session, profile)
+
+    cold = await generate_synthesis(db_session, profile.id, _fake_synthesis_router())
+    assert cold.cold_start is True
+    assert cold.generation_source == AnalysisGenerationSource.AI
+
+    await _seed_active_performance_insight(db_session, profile)
+    await db_session.commit()
+
+    warm = await generate_synthesis(db_session, profile.id, _fake_synthesis_router())
+    assert warm.cold_start is False
+    assert warm.generation_source == AnalysisGenerationSource.AI
+    assert len(warm.supporting_analyses) == 4  # brand + audience + market + performance insight
 
 
 async def test_ai_provider_failure_falls_back(db_session: AsyncSession) -> None:

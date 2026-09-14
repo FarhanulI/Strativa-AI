@@ -176,6 +176,14 @@ async def generate(session: AsyncSession, domain: str, profile_id: UUID, router:
     grounding = config.grounding_fn(profile)
     repository = IntelligenceAnalysisRepository(session, config.model)
 
+    # Brand's grounding data is already always profile-stated, so only
+    # Audience/Market analysis tables carry the `grounding_basis` column.
+    basis_kwargs = (
+        {"grounding_basis": grounding.grounding_basis}
+        if hasattr(config.model, "grounding_basis")
+        else {}
+    )
+
     if not grounding.sufficient:
         analysis = config.model(
             profile_id=profile_id,
@@ -184,6 +192,7 @@ async def generate(session: AsyncSession, domain: str, profile_id: UUID, router:
             source_fingerprint=grounding.fingerprint,
             generation_source=AnalysisGenerationSource.INSUFFICIENT_DATA,
             analysis_version=config.prompt_version,
+            **basis_kwargs,
         )
     else:
         reasoner = IntelligenceReasoner(router, config.task, config.prompt_version)
@@ -204,6 +213,7 @@ async def generate(session: AsyncSession, domain: str, profile_id: UUID, router:
             source_fingerprint=grounding.fingerprint,
             generation_source=generation_source,
             analysis_version=config.prompt_version,
+            **basis_kwargs,
         )
 
     await repository.clear_current(profile_id)

@@ -15,7 +15,7 @@ from app.models.ai_job import JobStatus
 from app.models.audience_intelligence import AudienceIntelligence, PainPoint, Persona
 from app.models.brand import Brand
 from app.models.content_profile import ContentProfile, ContentProfileType
-from app.models.intelligence_analysis import AnalysisGenerationSource
+from app.models.intelligence_analysis import AnalysisGenerationSource, GroundingBasis
 from app.models.market_intelligence import MarketIntelligence
 from app.models.market_signal import MarketSignal
 from app.models.topic import Topic
@@ -179,6 +179,30 @@ async def test_grounded_generation_references_real_ids(
     # (a root record or one of its children) — never fabricated by the LLM.
     for record_id in analysis.grounded_on:
         uuid.UUID(record_id)
+
+
+@pytest.mark.parametrize("domain", ["audience", "market"])
+async def test_stated_only_grounding_for_new_profile(db_session: AsyncSession, domain: str) -> None:
+    """A brand-new profile with zero signal history (no personas/pain points,
+    no topics/market signals) but onboarding-stated profile data must still
+    be able to generate — never fall back to insufficient_data just because
+    live signal data hasn't accumulated yet."""
+    _, profile = await _create_profile(db_session, f"stated-only-{domain}")
+    if domain == "audience":
+        profile.description = "Football tactics explained simply for casual fans."
+        profile.goals = ["grow to 50k engaged followers"]
+    else:
+        profile.topics = ["football tactics", "match analysis"]
+        profile.expertise = ["tactical breakdowns"]
+        profile.positioning = "The commentator who makes tactics simple"
+    await db_session.flush()
+    await db_session.refresh(profile)
+
+    analysis = await generate(db_session, domain, profile.id, _fake_router())
+
+    assert analysis.generation_source == AnalysisGenerationSource.AI
+    assert analysis.grounding_basis == GroundingBasis.STATED
+    assert any(entry.startswith("stated:") for entry in analysis.grounded_on)
 
 
 @pytest.mark.parametrize("domain", DOMAINS)

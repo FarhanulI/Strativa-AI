@@ -25,6 +25,7 @@ class ContentIntelligenceSynthesisResponse(BaseModel):
     generation_source: str
     is_current: bool
     is_stale: bool
+    cold_start: bool
     synthesis_version: str
     generated_at: datetime
 

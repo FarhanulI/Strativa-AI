@@ -40,6 +40,7 @@ def _serialize(synthesis) -> dict:
             generation_source=synthesis.generation_source.value,
             is_current=synthesis.is_current,
             is_stale=synthesis.is_stale,
+            cold_start=synthesis.cold_start,
             synthesis_version=synthesis.synthesis_version,
             generated_at=synthesis.generated_at,
         )

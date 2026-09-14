@@ -61,6 +61,12 @@ class ContentIntelligenceSynthesis(Base):
     )
     is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
     is_stale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    # True only when Brand/Audience/Market are all grounded and Performance
+    # is absent specifically because the profile has published nothing yet
+    # (see app.content_intelligence.grounding.gather_synthesis_grounding) --
+    # never set retroactively on rows generated before this distinction
+    # existed.
+    cold_start: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     synthesis_version: Mapped[str] = mapped_column(
         String(64), nullable=False, default="strategic_synthesis_v1"
     )

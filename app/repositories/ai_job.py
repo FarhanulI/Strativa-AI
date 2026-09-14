@@ -23,12 +23,15 @@ class AIJobRepository:
         self,
         profile_id: UUID,
         status: JobStatus | None = None,
+        task_type: str | None = None,
         skip: int = 0,
         limit: int = 100,
     ) -> list[AIJob]:
         statement = select(AIJob).where(AIJob.profile_id == profile_id)
         if status is not None:
             statement = statement.where(AIJob.status == status)
+        if task_type is not None:
+            statement = statement.where(AIJob.task_type == task_type)
         result = await self.session.execute(
             statement.order_by(AIJob.submitted_at.desc()).offset(skip).limit(limit)
         )

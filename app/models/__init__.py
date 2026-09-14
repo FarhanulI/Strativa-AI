@@ -39,6 +39,12 @@ from app.models.content_opportunity import (
 )
 from app.models.content_performance import ContentPerformance
 from app.models.content_profile import ContentProfile, ContentProfileType
+from app.models.intelligence_analysis import (
+    AnalysisGenerationSource,
+    AudienceAnalysis,
+    BrandAnalysis,
+    MarketAnalysis,
+)
 from app.models.market_intelligence import MarketIntelligence
 from app.models.market_signal import MarketSignal
 from app.models.offer import Offer
@@ -84,6 +90,10 @@ __all__ = [
     "ContentProfile",
     "ContentProfileType",
     "ContentPerformance",
+    "AnalysisGenerationSource",
+    "AudienceAnalysis",
+    "BrandAnalysis",
+    "MarketAnalysis",
     "PerformanceAnalysis",
     "PerformanceClassification",
     "PerformanceInsight",

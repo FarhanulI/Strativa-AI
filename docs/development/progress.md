@@ -2,7 +2,10 @@
 
 ## Current Status
 
-Days 1 through 17 establish the first complete strategic content loop:
+Days 1 through 17, plus Day 16's Intelligence Reasoning Layer (see its
+numbering note below), establish the first complete strategic content loop
+and give Brand, Audience, and Market Intelligence their first LLM
+reasoning layer:
 
 ```text
 Understand
@@ -476,6 +479,144 @@ failure logic for the (still manual/no-op) platform publish call, retracting
 an already-published item, or performance metrics ingestion — performance
 ingestion from published content is Day 18.
 
+## Day 16 (Intelligence Reasoning Layer) - Brand, Audience & Market Analysis
+
+> **Numbering note:** This entry is also numbered "Day 16," duplicating the
+> Content Library entry above. The two pieces of work were scoped and
+> executed independently under the same day number; per an explicit
+> project-owner decision, this entry keeps the Day 16 label and the
+> Content Library entry is left as-is pending a later renumbering pass by
+> the project owner. Treat both "Day 16" sections as real, completed work
+> until that reconciliation happens. See `docs/development/day-16.md` for
+> the full spec.
+
+Closed the gap that Brand, Audience, and Market Intelligence were pure data
+storage with no reasoning layer — Performance Intelligence (Day 9) was the
+only domain with LLM-reasoned insight generation until now:
+
+- Three new AI tasks — `brand_analysis`, `audience_analysis`,
+  `market_analysis` — registered in `TASK_PROVIDER_POLICY` alongside the
+  existing `performance_analysis`.
+- `BrandAnalysis`, `AudienceAnalysis`, `MarketAnalysis` models (one table
+  per domain, sharing a common column mixin rather than one polymorphic
+  table): `profile_id`, `insights` (JSONB list of `{summary, rationale}`),
+  `grounded_on` (JSONB list of the real record ids the analysis was
+  computed from), `source_fingerprint` (record count + latest timestamps,
+  used to detect staleness), `generation_source` (`ai` | `ai_fallback` |
+  `insufficient_data`), `is_current`, `analysis_version`, `generated_at`.
+  Indexed on `(profile_id, generated_at)` and `(profile_id, is_current)`
+  for O(1) latest-analysis lookup.
+- A single shared `app/services/intelligence_analysis.py` module
+  parameterized by domain (`DOMAIN_CONFIGS`) rather than three duplicated
+  services, per-domain grounding/minimum-data logic kept separate in
+  `app/services/intelligence/grounding.py` (`brand_grounding`,
+  `audience_grounding`, `market_grounding`), and a generic
+  `IntelligenceReasoner` (`app/services/llm/intelligence_reasoner.py`)
+  mirroring Day 9's `PerformanceReasoner` shape.
+- Per-domain minimums, checked before any AI call is attempted: Brand
+  requires at least one narrative field set (positioning, mission, vision,
+  USP, voice, or tone); Audience requires at least one persona **and** one
+  pain point; Market requires at least one topic **and** one market
+  signal. Below the minimum, generation short-circuits to
+  `generation_source=insufficient_data` with a templated message stating
+  what exists and what's missing — no AI call is made.
+- Above the minimum, generation calls the AI Router; on success
+  `generation_source=ai` with the model's structured insights; on any
+  `AIError` (including an unconfigured provider) `generation_source=
+  ai_fallback` with a templated message built purely from record counts —
+  never a fabricated interpretation.
+- `grounded_on` is always the deterministic list of real record ids the
+  service fetched to build the prompt — never taken from the LLM's
+  response — so lineage can't be fabricated regardless of what the model
+  returns.
+- Generation always runs through the Day 15 `ai_jobs` queue: this is the
+  **first** product feature to register a real `task_type` handler (three,
+  one per domain, via `functools.partial` over one shared handler
+  function) — Day 15 shipped with only the `infrastructure.echo`
+  placeholder. `app/workers/settings.py` now imports
+  `app.services.intelligence_analysis` specifically so the arq worker
+  process (which never imports the API router) also registers these
+  handlers.
+- `GET /profiles/{profile_id}/{brand,audience,market}-analysis`: returns
+  the current analysis (200) if its stored `source_fingerprint` still
+  matches the domain's live data; otherwise enqueues a job (or reuses an
+  already `queued`/`running` job for the same profile+task_type instead of
+  double-submitting) and returns `202` with a pending-job status body —
+  the endpoint never blocks on the AI call. Staleness is computed lazily
+  at GET/generation time from a fingerprint (record count + latest child
+  `updated_at` + root `updated_at`) rather than via write-time hooks on
+  the ~9 existing Brand/Audience/Market CRUD services, so no existing
+  service needed to change to satisfy "regenerate on material data
+  change."
+- `app/infrastructure/jobs/pool.py` adds `get_arq_pool()`, the first
+  FastAPI-reachable arq connection singleton (Day 15 only had the
+  worker-side `RedisSettings`) — mirrors `get_redis()`'s single-instance
+  pattern.
+- The GET route is the first real caller of Day 15's `CacheService`:
+  a fresh (200) result is cached at `profile:{profile_id}:{domain}-
+  analysis` and explicitly invalidated by the job handler on successful
+  regeneration, rather than relying on TTL alone. The route reads/writes
+  the cache key directly rather than through `CacheService.get_or_compute`
+  because the pending/enqueue branch must never be cached, and
+  `get_or_compute` has no way to say "don't cache this particular
+  result."
+- Ownership: identical chain to every other domain — a caller who can't
+  resolve the profile through their workspace gets 404, never 403/400,
+  whether reading or triggering analysis.
+- Migration `p9q0r1s2t3` adds the three tables plus a Postgres
+  `analysisgenerationsource` enum, reversible.
+
+Explicitly out of scope for this day: combining the three analyses into
+one strategic picture (a future "Day 17"-equivalent synthesis step), any
+change to Performance Intelligence (which already had this pattern), and
+any change to Opportunity Engine scoring.
+
+A backend-review pass on this day's implementation caught one critical
+issue before it shipped: the GET route's cache lookup (`profile:{profile_id}:
+{domain}-analysis`) originally ran **before** the ownership check inside
+`get_or_enqueue`, keyed only by `profile_id` and `domain` — once one
+workspace legitimately generated and cached an analysis, any caller who
+knew that `profile_id` could read it back with an arbitrary `workspace_id`
+and get a 200 with the cached content, never reaching the ownership check
+at all. Fixed by namespacing the cache key with `workspace_id`
+(`profile:{profile_id}:{domain}-analysis:workspace:{workspace_id}`), so a
+wrong `workspace_id` always misses the cache and falls through to
+`get_or_enqueue`'s real ownership check (404) instead of short-circuiting
+past it. The review also caught a narrower issue — in-flight-job dedup
+truncated to the 10 most recent jobs for a profile before filtering by
+`task_type` in Python, so a profile with 10+ concurrent jobs of other task
+types could miss an already-queued analysis job and double-submit;
+`AIJobRepository.list_by_profile` now takes an optional `task_type` filter
+applied in the query itself. Both fixes are covered by tests (see below).
+
+Verification completed with:
+
+- 21 tests in `tests/test_intelligence_analysis.py`: insufficient-data
+  fallback per domain, grounded generation asserting `grounded_on`
+  contains only real record ids, AI-provider-failure fallback per domain,
+  fingerprint change detection on material data mutation per domain,
+  workspace/profile ownership isolation (404) per domain, the GET
+  endpoint's enqueue-then-serve-fresh round trip through a real
+  `execute_ai_job` call per domain, a dedicated regression test that a
+  cached analysis for one workspace is never servable to a different
+  workspace_id for the same profile_id, cache invalidation on job success,
+  and the `is_current` flag moving to the newest analysis on regeneration.
+- Full repository regression suite (254 tests) passing.
+- Ruff check and format check clean for all Day 16 files (repo-wide ruff
+  drift outside these files is pre-existing, per the Day 16/17 note
+  above).
+- Migration chain validated with a single head (`p9q0r1s2t3`).
+
+Known limitations carried forward from this day (see also "Known
+Limitations and Intentionally Deferred Work" below): no database-level
+partial-unique constraint enforces "at most one `is_current=True` row per
+profile per domain" — it's maintained by clearing the previous current row
+and inserting the new one inside a single service-level transaction, not a
+DB constraint; and duplicate-job avoidance checks for an existing
+queued/running `AIJob` of the same `task_type` rather than using Day 15's
+Redis idempotency-key claim helper, which was judged unnecessary extra
+infrastructure for this day's scope.
+
 ## Architecture After Day 17
 
 ```text
@@ -526,7 +667,12 @@ validation, and repositories handle persistence and queries.
 Alongside this domain tree, Day 15 added `ai_jobs` as a parallel
 infrastructure table (FK to `ContentProfile.id`, but not part of the
 Intelligence/Strategy/Creation tree above) and the `app/infrastructure/`
-module described below.
+module described below. Day 16 (Intelligence Reasoning Layer) added
+`brand_analysis`, `audience_analysis`, and `market_analysis` as three more
+tables FK'd to `ContentProfile.id`, one per Brand/Audience/Market
+Intelligence node in the tree above — each storing that domain's latest
+LLM-reasoned analysis rather than being part of the domain's own data
+model.
 
 ## Platform Infrastructure
 
@@ -728,16 +874,19 @@ Day 17 publishing verification completed with:
 
 ## Known Limitations and Intentionally Deferred Work
 
-The following are intentionally outside Days 1-17:
+The following are intentionally outside Days 1-17 (Day 16's Intelligence
+Reasoning Layer is covered separately above and closed two of these gaps —
+see the note there):
 
-- Any product feature actually submitting a job through the Day 15 job
-  queue — the infrastructure (arq worker, `ai_jobs` table, retry/backoff,
-  timeout) exists, but no `task_type` handler is registered for a real AI
-  task yet, and the Day 17 publish scheduler still deliberately remains its
-  own narrow single-table poller rather than routing through the queue.
-- `CacheService` wired into any real read path, and the rate limiter/
-  idempotency-key helpers wired into any real endpoint (all built and
-  tested in isolation per Day 15, `rate_limit_enabled` defaults `False`).
+- The Day 17 publish scheduler still deliberately remains its own narrow
+  single-table poller rather than routing through the Day 15 job queue.
+- The rate limiter/idempotency-key helpers wired into any real endpoint
+  (built and tested in isolation per Day 15, `rate_limit_enabled` defaults
+  `False`; Day 16 wired `CacheService` into a real read path, but did not
+  use the idempotency-key helper — see Day 16's known limitations above).
+- A database-level constraint enforcing "at most one current row" for
+  Day 16's per-domain analysis tables — maintained by application-level
+  transaction ordering instead (see Day 16 above).
 - Retry-on-failure logic for the actual platform publish call, and retracting
   an already-published item.
 - Real OAuth flows and real Facebook, Instagram, TikTok, YouTube, LinkedIn, or
@@ -786,7 +935,11 @@ evaluation, brief composition, deterministic and AI-assisted draft creation,
 creative variations, quality evaluation, workspace-scoped content library
 retrieval, manual/scheduled publish confirmation with cancellation, and (Day
 15) reusable platform infrastructure — background jobs, caching, rate
-limiting, idempotency, distributed locks, and sized connection pooling — with
-no product feature yet consuming it. No real social platform API
-integrations, OAuth flows, advanced media generation, autonomous strategy
-features, or real authenticated-user identity were added.
+limiting, idempotency, distributed locks, and sized connection pooling.
+Day 16's Intelligence Reasoning Layer is the first product feature to
+actually consume that Day 15 job queue and cache infrastructure, adding
+LLM-reasoned, data-grounded analysis to Brand, Audience, and Market
+Intelligence (Performance Intelligence already had this from Day 9). No
+real social platform API integrations, OAuth flows, advanced media
+generation, autonomous strategy features, cross-domain strategic synthesis,
+or real authenticated-user identity were added.

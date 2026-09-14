@@ -10,4 +10,7 @@ TASK_PROVIDER_POLICY: dict[AITask, tuple[str, ...]] = {
     AITask.HOOK_GENERATION: ("gemini",),
     AITask.CAPTION_GENERATION: ("gemini",),
     AITask.CONTENT_EVALUATION: ("gemini",),
+    AITask.BRAND_ANALYSIS: ("gemini",),
+    AITask.AUDIENCE_ANALYSIS: ("gemini",),
+    AITask.MARKET_ANALYSIS: ("gemini",),
 }

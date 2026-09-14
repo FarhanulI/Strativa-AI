@@ -11,6 +11,9 @@ class AITask(StrEnum):
     HOOK_GENERATION = "hook_generation"
     CAPTION_GENERATION = "caption_generation"
     CONTENT_EVALUATION = "content_evaluation"
+    BRAND_ANALYSIS = "brand_analysis"
+    AUDIENCE_ANALYSIS = "audience_analysis"
+    MARKET_ANALYSIS = "market_analysis"
 
 
 class AICapability(StrEnum):

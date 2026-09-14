@@ -16,6 +16,7 @@ from app.api.v1.content_opportunities import router as content_opportunities_rou
 from app.api.v1.content_profiles import router as content_profiles_router
 from app.api.v1.desires import router as desires_router
 from app.api.v1.health import router as health_router
+from app.api.v1.intelligence_analysis import router as intelligence_analysis_router
 from app.api.v1.market_intelligence import router as market_intelligence_router
 from app.api.v1.market_signals import router as market_signals_router
 from app.api.v1.offers import router as offers_router
@@ -56,3 +57,4 @@ api_router.include_router(topics_router)
 api_router.include_router(market_signals_router)
 api_router.include_router(competitors_router)
 api_router.include_router(performance_router)
+api_router.include_router(intelligence_analysis_router)

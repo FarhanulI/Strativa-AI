@@ -11,6 +11,9 @@ from app.api.v1.content_briefs import router as content_briefs_router
 from app.api.v1.content_draft_variations import router as content_draft_variations_router
 from app.api.v1.content_drafts import router as content_drafts_router
 from app.api.v1.content_evaluations import router as content_evaluations_router
+from app.api.v1.content_intelligence_synthesis import (
+    router as content_intelligence_synthesis_router,
+)
 from app.api.v1.content_library import router as content_library_router
 from app.api.v1.content_opportunities import router as content_opportunities_router
 from app.api.v1.content_profiles import router as content_profiles_router
@@ -58,3 +61,4 @@ api_router.include_router(market_signals_router)
 api_router.include_router(competitors_router)
 api_router.include_router(performance_router)
 api_router.include_router(intelligence_analysis_router)
+api_router.include_router(content_intelligence_synthesis_router)

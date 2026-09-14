@@ -35,6 +35,7 @@ def _fake_cache_redis(monkeypatch: pytest.MonkeyPatch):
     fake = fakeredis.FakeRedis(decode_responses=True)
     monkeypatch.setattr("app.api.v1.intelligence_analysis.get_redis", lambda: fake)
     monkeypatch.setattr("app.services.intelligence_analysis.get_redis", lambda: fake)
+    monkeypatch.setattr("app.content_intelligence.service.get_redis", lambda: fake)
     yield fake
 
 

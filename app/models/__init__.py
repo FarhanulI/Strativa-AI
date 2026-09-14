@@ -37,6 +37,7 @@ from app.models.content_opportunity import (
     OpportunityStatus,
     TargetObjective,
 )
+from app.models.content_intelligence_synthesis import ContentIntelligenceSynthesis
 from app.models.content_performance import ContentPerformance
 from app.models.content_profile import ContentProfile, ContentProfileType
 from app.models.intelligence_analysis import (
@@ -87,6 +88,7 @@ __all__ = [
     "OpportunitySource",
     "OpportunityStatus",
     "TargetObjective",
+    "ContentIntelligenceSynthesis",
     "ContentProfile",
     "ContentProfileType",
     "ContentPerformance",

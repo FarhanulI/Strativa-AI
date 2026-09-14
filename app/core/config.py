@@ -36,6 +36,9 @@ class Settings(BaseSettings):
 
     # Cache (app/infrastructure/cache)
     cache_default_ttl_seconds: int = 300
+    # Strategic synthesis (app/content_intelligence) is the most expensive
+    # reasoning call in the system -- a longer TTL than component analyses.
+    cache_synthesis_ttl_seconds: int = 1800
 
     # Rate limiting (app/infrastructure/ratelimit) — a lower ceiling for
     # AI-triggering routes than plain CRUD routes; see policy.py.

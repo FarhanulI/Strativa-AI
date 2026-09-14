@@ -617,6 +617,120 @@ queued/running `AIJob` of the same `task_type` rather than using Day 15's
 Redis idempotency-key claim helper, which was judged unnecessary extra
 infrastructure for this day's scope.
 
+## Day 17 (Content Intelligence Synthesis Engine) - Cross-Domain Strategic Synthesis
+
+> **Numbering note:** This entry is also numbered "Day 17," duplicating the
+> Publishing Foundation entry above, following the same established practice
+> as the two "Day 16" sections earlier in this document. The two pieces of
+> work were scoped and executed independently under the same day number; this
+> entry keeps the Day 17 label pending a later renumbering pass by the
+> project owner. See `docs/development/day-17.md` for the full spec (Section
+> 7 there covers this work specifically).
+
+Implemented `strategic_synthesis` — the first module that reads across all
+four Content Intelligence domains (Brand, Audience, Market from Day 16's
+Intelligence Reasoning Layer, and Performance from Day 9) and combines
+whichever currently exist for a profile into one grounded cross-domain
+strategic summary. This is the first real implementation of the
+architecture's "Content Intelligence is the Central Brain" principle
+(`docs/product/product-architecture.md`) — previously each domain's LLM
+reasoning stood alone with nothing synthesizing them together:
+
+- New `app/content_intelligence/` domain module, organized around reading
+  across domains rather than living inside one of them — `grounding.py`
+  (`gather_synthesis_grounding`, deterministically collecting which of
+  Brand/Audience/Market analysis and Performance insights are "available" —
+  an `insufficient_data` component analysis does not count as available,
+  since it carries only a templated placeholder, not real reasoning),
+  `reasoner.py` (`SynthesisReasoner`, the first task in the codebase to
+  declare `required_capabilities={REASONING, STRUCTURED_OUTPUT,
+  LONG_CONTEXT}` on its `AIRequest`, matching the architecture's own
+  `strategic_synthesis` capability example), and `service.py`
+  (`generate_synthesis`, `ContentIntelligenceSynthesisService`,
+  `mark_synthesis_stale_and_invalidate`).
+- `ContentIntelligenceSynthesis` model: `profile_id`, `summary`,
+  `key_themes` (JSONB list), `supporting_analyses` (JSONB list of real
+  `BrandAnalysis`/`AudienceAnalysis`/`MarketAnalysis`/`PerformanceInsight`
+  ids — always the deterministically-collected list, never anything an LLM
+  response could fabricate), `generation_source` (reuses Day 16's
+  `AnalysisGenerationSource` enum rather than duplicating it), `is_current`,
+  `is_stale`, `synthesis_version`, `generated_at`. A partial unique index
+  enforces exactly one `is_current=true` row per profile **at the database
+  level** — closing the gap Day 16 left open (Day 16 only maintained "one
+  current row" through transaction ordering, with no DB constraint).
+- Deterministic fallback: fewer than two available component domains
+  short-circuits to `generation_source=insufficient_data` with a templated
+  message naming what's present/missing, with no AI call made. An `AIError`
+  on two-or-more available domains produces `generation_source=ai_fallback`
+  with a templated summary built from the available domain names — never a
+  fabricated interpretation.
+- Staleness-driven invalidation, not eager regeneration: any component
+  analysis regenerating — `app.services.intelligence_analysis.generate()`
+  for Brand/Audience/Market, `app.services.performance_insight
+  .PerformanceInsightService.create()` for Performance — calls
+  `mark_synthesis_stale_and_invalidate`, which only flips `is_stale=True` on
+  the profile's current synthesis row and drops its cache entry. It does not
+  regenerate the synthesis itself, so several components changing close
+  together cannot trigger a thundering herd of synthesis jobs; regeneration
+  happens lazily, the next time the GET endpoint is called.
+- `strategic_synthesis` registered in `TASK_PROVIDER_POLICY` and run through
+  the Day 15 `ai_jobs` queue exactly like the Day 16 domain tasks — never
+  synchronously inside a request. `app/workers/settings.py` now also imports
+  `app.content_intelligence.service` to register the handler in the worker
+  process.
+- `GET /api/v1/profiles/{profile_id}/synthesis`: returns the current
+  synthesis (200) if it exists and isn't stale; otherwise enqueues
+  regeneration (reusing Day 16's in-flight-job dedup pattern) and returns
+  `202` with a pending-job body. Cached at `profile:{profile_id}:synthesis:
+  workspace:{workspace_id}` (namespaced by `workspace_id` for the same
+  ownership-safety reason as the Day 16 analysis cache key) with
+  `cache_synthesis_ttl_seconds` (1800s default — six times the Day 16 domain
+  analysis TTL), since this is the most expensive reasoning call in the
+  system.
+- Historical synthesis rows are kept (`is_current` moves rather than being
+  overwritten) per the architecture's data-lineage principle.
+- Migration `q0r1s2t3u4` creates the `content_intelligence_synthesis` table,
+  reusing the `analysisgenerationsource` Postgres enum Day 16's `p9q0r1s2t3`
+  migration already created (`create_type=False`) instead of duplicating it.
+  Reversible; single migration head.
+
+Explicitly out of scope for this day: feeding synthesis into
+`ContentOpportunity` scoring or `opportunity_reasoning` (Day 18), exposing
+synthesis as a standalone user-facing feature (it's an internal grounding
+artifact for downstream reasoning only), and any change to how Brand/
+Audience/Market or Performance analysis is itself generated, beyond the new
+staleness-marking call.
+
+An independent architecture review (mirroring the Day 16 backend-review
+pass) specifically checked for a repeat of Day 16's cache-key-ownership
+bypass class of bug, cross-tenant `workspace_id` corruption in the
+staleness/cache-invalidation path, LLM-fabricated lineage leaking into
+`supporting_analyses`, and scope creep into Opportunity scoring — found none,
+verdict PASS.
+
+Verification completed with:
+
+- 12 tests in `tests/test_content_intelligence_synthesis.py`: grounded
+  synthesis across all four inputs asserting `supporting_analyses` contains
+  only real ids, insufficient-data fallback with 0 and 1 available
+  components, AI-provider-failure fallback, staleness triggered by a Brand
+  analysis regeneration, staleness triggered by a new Performance insight
+  (through the real `PerformanceInsightService.create` call), regeneration
+  preserving history, the GET endpoint's enqueue-then-serve-fresh-then-
+  serve-from-cache round trip through a real `execute_ai_job` call,
+  job-success cache invalidation, stale-marking cache invalidation,
+  workspace/profile ownership isolation, and the service's `get_or_enqueue`
+  returning the current row without enqueuing when not stale.
+- Full repository regression suite passing: 266 tests. Fixing this feature
+  required one addition to an existing Day 16 test fixture:
+  `tests/test_intelligence_analysis.py`'s autouse Redis-fake fixture needed
+  to also patch `get_redis` in `app.content_intelligence.service`, since
+  `generate()` now calls into that module — not a design gap, just an
+  existing fixture that needed one more monkeypatch line for a new internal
+  collaborator.
+- Ruff check and format check clean for all Day 17 (Synthesis) files.
+- Migration chain validated with a single head (`q0r1s2t3u4`).
+
 ## Architecture After Day 17
 
 ```text
@@ -639,6 +753,7 @@ Workspace
         |     +-- Content Performance
         |     +-- Performance Analysis
         |     +-- Performance Insights
+        +-- Content Intelligence Synthesis (reads across all four above)
         +-- Content Opportunities
               |
               +-- Content Briefs
@@ -672,7 +787,14 @@ module described below. Day 16 (Intelligence Reasoning Layer) added
 tables FK'd to `ContentProfile.id`, one per Brand/Audience/Market
 Intelligence node in the tree above — each storing that domain's latest
 LLM-reasoned analysis rather than being part of the domain's own data
-model.
+model. Day 17 (Content Intelligence Synthesis Engine) added
+`content_intelligence_synthesis`, also FK'd to `ContentProfile.id`, but
+unlike every prior analysis table it is not scoped to one Intelligence
+domain — it reads across `brand_analysis`, `audience_analysis`,
+`market_analysis`, and `performance_insight` at once, making
+`app/content_intelligence/` the first domain module organized around
+cross-domain reading rather than living inside a single Intelligence
+domain.
 
 ## Platform Infrastructure
 
@@ -939,7 +1061,11 @@ limiting, idempotency, distributed locks, and sized connection pooling.
 Day 16's Intelligence Reasoning Layer is the first product feature to
 actually consume that Day 15 job queue and cache infrastructure, adding
 LLM-reasoned, data-grounded analysis to Brand, Audience, and Market
-Intelligence (Performance Intelligence already had this from Day 9). No
-real social platform API integrations, OAuth flows, advanced media
-generation, autonomous strategy features, cross-domain strategic synthesis,
-or real authenticated-user identity were added.
+Intelligence (Performance Intelligence already had this from Day 9). Day 17's
+Content Intelligence Synthesis Engine is the first module to read across all
+four Intelligence domains at once, combining them into one grounded
+cross-domain strategic summary — the architecture's "central brain" concept
+given its first real implementation, not yet consumed by Opportunity scoring
+(Day 18). No real social platform API integrations, OAuth flows, advanced
+media generation, autonomous strategy features, or real authenticated-user
+identity were added.

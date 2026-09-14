@@ -6,6 +6,7 @@ from uuid import UUID
 from arq.connections import ArqRedis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.content_intelligence.service import mark_synthesis_stale_and_invalidate
 from app.core.database import async_session_factory
 from app.infrastructure.cache.service import CacheService
 from app.infrastructure.jobs.registry import register_handler
@@ -207,6 +208,10 @@ async def generate(session: AsyncSession, domain: str, profile_id: UUID, router:
 
     await repository.clear_current(profile_id)
     await repository.create(analysis)
+    # Any regeneration of a Brand/Audience/Market component invalidates the
+    # profile's current strategic synthesis (see docs/development/day-17.md)
+    # — synthesis itself regenerates lazily on next read, not eagerly here.
+    await mark_synthesis_stale_and_invalidate(session, profile_id, profile.workspace_id)
     await session.commit()
     return analysis
 

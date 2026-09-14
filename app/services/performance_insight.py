@@ -4,6 +4,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.content_intelligence.service import mark_synthesis_stale_and_invalidate
 from app.models.performance_insight import PerformanceInsight
 from app.repositories.content_profile import ContentProfileRepository
 from app.services.content_performance import ContentPerformanceService
@@ -40,6 +41,11 @@ class PerformanceInsightService:
             **ai_result.output.model_dump(),
         )
         self.session.add(insight)
+        # A new Performance component (an active insight) invalidates the
+        # profile's current strategic synthesis (see
+        # docs/development/day-17.md) — synthesis regenerates lazily on next
+        # read, not eagerly here.
+        await mark_synthesis_stale_and_invalidate(self.session, profile_id, workspace_id)
         await self.session.commit()
         return insight
 

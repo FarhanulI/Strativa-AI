@@ -165,6 +165,8 @@ Audience Intelligence represents who the profile wants to reach and what that au
 
 Audience Intelligence evolves as the platform learns from new audience behavior and content performance.
 
+**Grounding basis:** reasoning may be grounded on accumulated signal/record data (personas, pain points, questions — `observed`), on onboarding-stated profile data (a stated target-audience description, stated goals — `stated`), or both (`mixed`). A brand-new profile with no engagement history yet is not "insufficient data" — its onboarding-stated audience description is valid grounding in its own right, independent of whether any signal has been observed yet. See **Cold Start / Activation Mode** for how this applies to cross-domain synthesis.
+
 ---
 
 ## Market Intelligence
@@ -185,6 +187,8 @@ Market Intelligence represents the external environment surrounding the profile.
 **LLM reasoning layer:** the LLM interprets trends, competitors, formats, and market signals **in the context of the specific profile and audience** — a trend is only meaningful once the LLM has reasoned about whether and how it connects to this profile's positioning and this audience's needs. A trend the LLM cannot connect to profile or audience context is not elevated into strategy.
 
 Market signals remain **inputs into strategy**, never automatic content-generation commands, regardless of how the LLM characterizes them.
+
+**Grounding basis:** as with Audience Intelligence, Market reasoning may be grounded on accumulated signal data (topics, market signals, competitors — `observed`), on onboarding-stated profile data (stated topics, expertise, positioning — `stated`), or both (`mixed`). A profile with no observed market signals yet can still reason about its market from what it stated about itself at onboarding.
 
 ---
 
@@ -224,6 +228,21 @@ Performance Intelligence must answer:
 rather than merely displaying raw analytics. The deterministic analysis (baseline comparison, statistical deltas) is the evidence; the LLM's explanation must be grounded in that evidence, not offered as an unsupported narrative.
 
 Performance learnings become future strategic inputs.
+
+---
+
+## Cold Start / Activation Mode
+
+A brand-new profile has no Performance Intelligence — it hasn't published anything yet. That absence is **expected and normal**, not a data gap, and the system must not treat it as one.
+
+Cross-domain synthesis (see **Content Intelligence is the Central Brain** and the four-domain architecture above) distinguishes two different reasons Performance Intelligence can be missing from the full picture:
+
+1. **Genuine insufficient data** — one or more of Brand, Audience, or Market Intelligence is *also* thin or missing. The system falls back to a deterministic, unenriched result rather than reasoning over gaps, per **Deterministic First, AI Enriched**.
+2. **Cold start** — Brand, Audience, and Market Intelligence are all present and adequately grounded (stated, observed, or both), and only Performance is absent, specifically because the profile has not published any content yet. This must be verified directly against the absence of published content and performance records — never merely inferred from Performance Intelligence being empty, since a profile can also lack Performance Intelligence for reasons that *are* a genuine gap (content published, but not yet analyzed).
+
+Cold start is not a reason to degrade the reasoning: synthesis still runs as a full, AI-reasoned output, not a templated fallback. The reasoning is reframed rather than suppressed — it explains what a strong **first** piece of content should be, grounded in the profile's positioning, audience, and market context, and must never fabricate or imply performance history that doesn't exist. The result should read as an inspiring activation recommendation for a new profile, not an apologetic or degraded one.
+
+Once the profile publishes its first content and performance data begins accumulating, cold start resolves automatically through the same staleness/regeneration mechanism that keeps every other domain current — it is a transitional state a profile passes through, not a permanent product mode.
 
 ---
 

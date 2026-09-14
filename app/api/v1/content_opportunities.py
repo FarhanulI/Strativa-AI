@@ -1,10 +1,12 @@
 from typing import Annotated
 from uuid import UUID
 
+from arq.connections import ArqRedis
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
+from app.infrastructure.jobs.pool import get_arq_pool
 from app.schemas.content_opportunity import (
     ContentOpportunityCreate,
     ContentOpportunityResponse,
@@ -31,9 +33,12 @@ async def create_opportunity(
     payload: ContentOpportunityCreate,
     workspace_id: Annotated[UUID, Query(...)],
     service: Annotated[ContentOpportunityService, Depends(get_content_opportunity_service)],
+    arq_pool: Annotated[ArqRedis, Depends(get_arq_pool)],
 ) -> ContentOpportunityResponse:
     try:
-        opportunity = await service.create(profile_id, workspace_id, **payload.model_dump())
+        opportunity = await service.create(
+            profile_id, workspace_id, arq_pool, **payload.model_dump()
+        )
     except ValueError as error:
         raise not_found(error) from error
     return ContentOpportunityResponse.model_validate(opportunity)

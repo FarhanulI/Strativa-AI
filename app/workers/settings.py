@@ -2,15 +2,17 @@ from arq.connections import RedisSettings
 
 import app.content_intelligence.service  # noqa: F401
 import app.services.intelligence_analysis  # noqa: F401
+import app.services.opportunity_reasoning  # noqa: F401
 from app.core.config import settings
 from app.infrastructure.jobs.worker_tasks import execute_ai_job
 
 # Importing app.services.intelligence_analysis registers the brand/audience/
-# market analysis job handlers, and app.content_intelligence.service
-# registers the strategic_synthesis handler (see the bottom of each module)
-# — the worker process never imports the API router, so these imports are
-# the only thing that makes those task_types resolvable via get_handler()
-# here.
+# market analysis job handlers, app.content_intelligence.service registers
+# the strategic_synthesis handler, and app.services.opportunity_reasoning
+# registers the opportunity_reasoning handler (see the bottom of each
+# module) — the worker process never imports the API router, so these
+# imports are the only thing that makes those task_types resolvable via
+# get_handler() here.
 
 
 def get_redis_settings() -> RedisSettings:

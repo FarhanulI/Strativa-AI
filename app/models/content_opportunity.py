@@ -47,6 +47,23 @@ class OpportunityStatus(StrEnum):
     EXPIRED = "expired"
 
 
+class RationaleGenerationSource(StrEnum):
+    """Provenance of `ContentOpportunity.strategic_rationale`.
+
+    Unlike score/priority (always deterministic), the rationale text itself
+    may come from the `opportunity_reasoning` AI task (see
+    docs/development/day-18.md). `DETERMINISTIC` covers both the templated
+    placeholder written at creation and the fallback when no current
+    synthesis exists yet or the AI provider fails -- there is deliberately
+    no separate `ai_fallback` value, because in both fallback cases the
+    persisted text is the same deterministic template, not a degraded AI
+    output.
+    """
+
+    AI = "ai"
+    DETERMINISTIC = "deterministic"
+
+
 class ContentOpportunity(Base):
     __tablename__ = "content_opportunities"
     __table_args__ = (
@@ -89,6 +106,15 @@ class ContentOpportunity(Base):
         SqlEnum(OpportunityStatus), nullable=False, default=OpportunityStatus.DRAFT, index=True
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rationale_generation_source: Mapped[RationaleGenerationSource] = mapped_column(
+        SqlEnum(RationaleGenerationSource),
+        nullable=False,
+        default=RationaleGenerationSource.DETERMINISTIC,
+        index=True,
+    )
+    rationale_generated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     json_type = JSON().with_variant(JSONB, "postgresql")
     opportunity_metadata: Mapped[dict[str, Any] | None] = mapped_column(

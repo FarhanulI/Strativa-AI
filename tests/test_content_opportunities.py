@@ -6,6 +6,11 @@ from httpx import ASGITransport, AsyncClient
 from app.ai.strategy.opportunity_scorer import OpportunityScorer
 from app.main import app
 
+# Every opportunity creation fans out one opportunity_reasoning job (see
+# docs/development/day-18.md); tests/conftest.py's autouse
+# `_default_arq_pool_override` fakes the arq pool for every test in this
+# suite, so these CRUD/scoring tests don't need their own override.
+
 
 async def create_workspace(client: AsyncClient, slug: str) -> str:
     response = await client.post("/api/v1/workspaces", json={"name": slug, "slug": slug})

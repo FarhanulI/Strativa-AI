@@ -15,6 +15,7 @@ class AITask(StrEnum):
     AUDIENCE_ANALYSIS = "audience_analysis"
     MARKET_ANALYSIS = "market_analysis"
     STRATEGIC_SYNTHESIS = "strategic_synthesis"
+    OPPORTUNITY_REASONING = "opportunity_reasoning"
 
 
 class AICapability(StrEnum):

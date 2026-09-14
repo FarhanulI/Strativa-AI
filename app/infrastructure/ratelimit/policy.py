@@ -40,3 +40,14 @@ def rule_for_category(category: RouteCategory) -> RateLimitRule:
         max_requests=settings.rate_limit_crud_requests_per_window,
         window_seconds=settings.rate_limit_window_seconds,
     )
+
+
+def reasoning_rule() -> RateLimitRule:
+    """Per-profile ceiling on `opportunity_reasoning` job execution (Day 18)
+    — applied inside the worker, not the HTTP middleware, so it throttles AI
+    cost from a burst of newly-created opportunities rather than requests.
+    """
+    return RateLimitRule(
+        max_requests=settings.rate_limit_reasoning_requests_per_window,
+        window_seconds=settings.rate_limit_window_seconds,
+    )

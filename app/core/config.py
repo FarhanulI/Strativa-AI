@@ -60,6 +60,13 @@ class Settings(BaseSettings):
         ]
     )
 
+    # Per-profile rate limiting for opportunity_reasoning job execution (Day
+    # 18) — reuses the Day 15 sliding-window limiter, but applied inside the
+    # worker rather than the HTTP middleware: a burst of new opportunities
+    # for one profile queues excess reasoning jobs rather than dropping or
+    # failing them (see app.infrastructure.jobs.worker_tasks).
+    rate_limit_reasoning_requests_per_window: int = 10
+
     # Idempotency-Key handling for job-submission endpoints
     idempotency_key_ttl_seconds: int = 600
 

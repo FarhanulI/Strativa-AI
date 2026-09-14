@@ -8,6 +8,7 @@ from app.models.content_opportunity import (
     OpportunityPriority,
     OpportunitySource,
     OpportunityStatus,
+    RationaleGenerationSource,
     TargetObjective,
 )
 
@@ -47,6 +48,18 @@ class ContentOpportunityResponse(BaseModel):
     priority: OpportunityPriority
     status: OpportunityStatus
     expires_at: datetime | None
+    rationale_generation_source: RationaleGenerationSource
+    rationale_generated_at: datetime | None
     opportunity_metadata: dict[str, Any] | None
     created_at: datetime
     updated_at: datetime
+
+
+class OpportunityRationaleLLMResult(BaseModel):
+    """Structured AI output for the `opportunity_reasoning` task. The score,
+    components, and ranking are never touched by this -- only the
+    natural-language explanation of what the deterministic score already
+    produced.
+    """
+
+    strategic_rationale: str = Field(..., min_length=1)

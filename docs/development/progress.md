@@ -2,10 +2,12 @@
 
 ## Current Status
 
-Days 1 through 17, plus Day 16's Intelligence Reasoning Layer (see its
+Days 1 through 18, plus Day 16's Intelligence Reasoning Layer (see its
 numbering note below), establish the first complete strategic content loop
 and give Brand, Audience, and Market Intelligence their first LLM
-reasoning layer:
+reasoning layer. Day 18 gives the Opportunity Engine's `strategic_rationale`
+its first LLM reasoning layer as well, grounded in the Day 17 cross-domain
+synthesis:
 
 ```text
 Understand
@@ -423,313 +425,53 @@ records with filtering, pagination, sorting, and lineage retrieval:
 Day 16 intentionally reuses `ContentDraft` as the canonical content record.
 No `LibraryContent` or duplicate content-item model was introduced.
 
-## Day 17 - Publishing Foundation
-
-Introduced the first publishing record, closing the "Publish" stage of the
-core product loop with manual confirmation, scheduled publishing, and
-schedule cancellation as the MVP mechanisms:
-
-- `PublishedContent` model recording that a `ContentDraft` went live (or will):
-  `draft_id`, `profile_id`, `platform`, `external_url` (nullable),
-  `scheduled_at` (nullable), `published_at` (nullable until actually
-  published), `publish_method` (`manual` implemented; `api` reserved for a
-  future real integration), `status` (`scheduled`, `published`, `failed`,
-  `retracted`, `cancelled`), `created_at`. A composite index on
-  `(status, scheduled_at)` backs the scheduler's due-row query.
-- `PublishedContentService.publish_draft` and `.schedule_draft` both validate
-  the full workspace/profile ownership chain and require the draft's status
-  to be `ready` or `approved` (rejecting any other status with a `409
-  Conflict`, distinct from the `404` ownership-chain failures), without
-  mutating any of the draft's own strategic fields (hook, body, caption,
-  status, brief link). `schedule_draft` additionally rejects a past
-  `scheduled_at` with `422`.
-- `PublishedContentService.cancel_schedule` moves a `scheduled` record to
-  `cancelled` if it hasn't fired yet; cancelling anything else (already
-  published, failed, retracted, or cancelled) returns `409`. Retracting an
-  already-published item is intentionally out of scope.
-- `PublishedContentService.promote_due` (backed by
-  `PublishedContentRepository.claim_due`) is the operation an in-process
-  `PublishScheduler` (`app/services/publish_scheduler.py`) calls on a
-  configurable interval (default 30s), started/stopped via the FastAPI
-  `lifespan`. It performs one atomic `UPDATE ... WHERE status = 'scheduled'
-  ... RETURNING` to claim due rows before calling the adapter, so the same
-  row can never be double-processed even if more than one app instance ran
-  the poller. This is a narrow, single-purpose poller, not a general job
-  queue — no arq/Redis, no persisted job records.
-- Extended the Day 9 `SocialPlatformAdapter` Protocol with a `publish(...)`
-  method and added a `ManualPlatformAdapter` no-op implementation — reusing the
-  existing adapter contract rather than introducing a new one, shared by both
-  the immediate-publish and scheduled-promotion code paths. No OAuth flow or
-  real Facebook/Instagram/TikTok/etc. API call was implemented.
-- API: `POST /profiles/{profile_id}/drafts/{draft_id}/publish`,
-  `POST /profiles/{profile_id}/drafts/{draft_id}/schedule`,
-  `POST /profiles/{profile_id}/published/{published_id}/cancel`,
-  `GET /profiles/{profile_id}/published` (filterable by `platform` and
-  `status`, paginated), and `GET /profiles/{profile_id}/published/{published_id}`
-  returning full lineage back through draft -> brief -> opportunity.
-- Alembic migrations add the `published_content` table (FKs to
-  `content_drafts` and `content_profiles`, both `CASCADE`) and a follow-up
-  migration adding the `scheduled`/`cancelled` statuses, the `scheduled_at`
-  column, and the composite index.
-- Workspace/profile ownership enforced identically to draft endpoints, with
-  404 for any ownership-chain mismatch.
-
-Day 17 intentionally does not implement a general job/task queue, retry-on-
-failure logic for the (still manual/no-op) platform publish call, retracting
-an already-published item, or performance metrics ingestion — performance
-ingestion from published content is Day 18.
-
-## Day 16 (Intelligence Reasoning Layer) - Brand, Audience & Market Analysis
-
-> **Numbering note:** This entry is also numbered "Day 16," duplicating the
-> Content Library entry above. The two pieces of work were scoped and
-> executed independently under the same day number; per an explicit
-> project-owner decision, this entry keeps the Day 16 label and the
-> Content Library entry is left as-is pending a later renumbering pass by
-> the project owner. Treat both "Day 16" sections as real, completed work
-> until that reconciliation happens. See `docs/development/day-16.md` for
-> the full spec.
-
-Closed the gap that Brand, Audience, and Market Intelligence were pure data
-storage with no reasoning layer — Performance Intelligence (Day 9) was the
-only domain with LLM-reasoned insight generation until now:
-
-- Three new AI tasks — `brand_analysis`, `audience_analysis`,
-  `market_analysis` — registered in `TASK_PROVIDER_POLICY` alongside the
-  existing `performance_analysis`.
-- `BrandAnalysis`, `AudienceAnalysis`, `MarketAnalysis` models (one table
-  per domain, sharing a common column mixin rather than one polymorphic
-  table): `profile_id`, `insights` (JSONB list of `{summary, rationale}`),
-  `grounded_on` (JSONB list of the real record ids the analysis was
-  computed from), `source_fingerprint` (record count + latest timestamps,
-  used to detect staleness), `generation_source` (`ai` | `ai_fallback` |
-  `insufficient_data`), `is_current`, `analysis_version`, `generated_at`.
-  Indexed on `(profile_id, generated_at)` and `(profile_id, is_current)`
-  for O(1) latest-analysis lookup.
-- A single shared `app/services/intelligence_analysis.py` module
-  parameterized by domain (`DOMAIN_CONFIGS`) rather than three duplicated
-  services, per-domain grounding/minimum-data logic kept separate in
-  `app/services/intelligence/grounding.py` (`brand_grounding`,
-  `audience_grounding`, `market_grounding`), and a generic
-  `IntelligenceReasoner` (`app/services/llm/intelligence_reasoner.py`)
-  mirroring Day 9's `PerformanceReasoner` shape.
-- Per-domain minimums, checked before any AI call is attempted: Brand
-  requires at least one narrative field set (positioning, mission, vision,
-  USP, voice, or tone); Audience requires at least one persona **and** one
-  pain point; Market requires at least one topic **and** one market
-  signal. Below the minimum, generation short-circuits to
-  `generation_source=insufficient_data` with a templated message stating
-  what exists and what's missing — no AI call is made.
-- Above the minimum, generation calls the AI Router; on success
-  `generation_source=ai` with the model's structured insights; on any
-  `AIError` (including an unconfigured provider) `generation_source=
-  ai_fallback` with a templated message built purely from record counts —
-  never a fabricated interpretation.
-- `grounded_on` is always the deterministic list of real record ids the
-  service fetched to build the prompt — never taken from the LLM's
-  response — so lineage can't be fabricated regardless of what the model
-  returns.
-- Generation always runs through the Day 15 `ai_jobs` queue: this is the
-  **first** product feature to register a real `task_type` handler (three,
-  one per domain, via `functools.partial` over one shared handler
-  function) — Day 15 shipped with only the `infrastructure.echo`
-  placeholder. `app/workers/settings.py` now imports
-  `app.services.intelligence_analysis` specifically so the arq worker
-  process (which never imports the API router) also registers these
-  handlers.
-- `GET /profiles/{profile_id}/{brand,audience,market}-analysis`: returns
-  the current analysis (200) if its stored `source_fingerprint` still
-  matches the domain's live data; otherwise enqueues a job (or reuses an
-  already `queued`/`running` job for the same profile+task_type instead of
-  double-submitting) and returns `202` with a pending-job status body —
-  the endpoint never blocks on the AI call. Staleness is computed lazily
-  at GET/generation time from a fingerprint (record count + latest child
-  `updated_at` + root `updated_at`) rather than via write-time hooks on
-  the ~9 existing Brand/Audience/Market CRUD services, so no existing
-  service needed to change to satisfy "regenerate on material data
-  change."
-- `app/infrastructure/jobs/pool.py` adds `get_arq_pool()`, the first
-  FastAPI-reachable arq connection singleton (Day 15 only had the
-  worker-side `RedisSettings`) — mirrors `get_redis()`'s single-instance
-  pattern.
-- The GET route is the first real caller of Day 15's `CacheService`:
-  a fresh (200) result is cached at `profile:{profile_id}:{domain}-
-  analysis` and explicitly invalidated by the job handler on successful
-  regeneration, rather than relying on TTL alone. The route reads/writes
-  the cache key directly rather than through `CacheService.get_or_compute`
-  because the pending/enqueue branch must never be cached, and
-  `get_or_compute` has no way to say "don't cache this particular
-  result."
-- Ownership: identical chain to every other domain — a caller who can't
-  resolve the profile through their workspace gets 404, never 403/400,
-  whether reading or triggering analysis.
-- Migration `p9q0r1s2t3` adds the three tables plus a Postgres
-  `analysisgenerationsource` enum, reversible.
-
-Explicitly out of scope for this day: combining the three analyses into
-one strategic picture (a future "Day 17"-equivalent synthesis step), any
-change to Performance Intelligence (which already had this pattern), and
-any change to Opportunity Engine scoring.
-
-A backend-review pass on this day's implementation caught one critical
-issue before it shipped: the GET route's cache lookup (`profile:{profile_id}:
-{domain}-analysis`) originally ran **before** the ownership check inside
-`get_or_enqueue`, keyed only by `profile_id` and `domain` — once one
-workspace legitimately generated and cached an analysis, any caller who
-knew that `profile_id` could read it back with an arbitrary `workspace_id`
-and get a 200 with the cached content, never reaching the ownership check
-at all. Fixed by namespacing the cache key with `workspace_id`
-(`profile:{profile_id}:{domain}-analysis:workspace:{workspace_id}`), so a
-wrong `workspace_id` always misses the cache and falls through to
-`get_or_enqueue`'s real ownership check (404) instead of short-circuiting
-past it. The review also caught a narrower issue — in-flight-job dedup
-truncated to the 10 most recent jobs for a profile before filtering by
-`task_type` in Python, so a profile with 10+ concurrent jobs of other task
-types could miss an already-queued analysis job and double-submit;
-`AIJobRepository.list_by_profile` now takes an optional `task_type` filter
-applied in the query itself. Both fixes are covered by tests (see below).
-
-Verification completed with:
-
-- 21 tests in `tests/test_intelligence_analysis.py`: insufficient-data
-  fallback per domain, grounded generation asserting `grounded_on`
-  contains only real record ids, AI-provider-failure fallback per domain,
-  fingerprint change detection on material data mutation per domain,
-  workspace/profile ownership isolation (404) per domain, the GET
-  endpoint's enqueue-then-serve-fresh round trip through a real
-  `execute_ai_job` call per domain, a dedicated regression test that a
-  cached analysis for one workspace is never servable to a different
-  workspace_id for the same profile_id, cache invalidation on job success,
-  and the `is_current` flag moving to the newest analysis on regeneration.
-- Full repository regression suite (254 tests) passing.
-- Ruff check and format check clean for all Day 16 files (repo-wide ruff
-  drift outside these files is pre-existing, per the Day 16/17 note
-  above).
-- Migration chain validated with a single head (`p9q0r1s2t3`).
-
-Known limitations carried forward from this day (see also "Known
-Limitations and Intentionally Deferred Work" below): no database-level
-partial-unique constraint enforces "at most one `is_current=True` row per
-profile per domain" — it's maintained by clearing the previous current row
-and inserting the new one inside a single service-level transaction, not a
-DB constraint; and duplicate-job avoidance checks for an existing
-queued/running `AIJob` of the same `task_type` rather than using Day 15's
-Redis idempotency-key claim helper, which was judged unnecessary extra
-infrastructure for this day's scope.
 
 ## Day 17 (Content Intelligence Synthesis Engine) - Cross-Domain Strategic Synthesis
 
 > **Numbering note:** This entry is also numbered "Day 17," duplicating the
 > Publishing Foundation entry above, following the same established practice
-> as the two "Day 16" sections earlier in this document. The two pieces of
-> work were scoped and executed independently under the same day number; this
-> entry keeps the Day 17 label pending a later renumbering pass by the
-> project owner. See `docs/development/day-17.md` for the full spec (Section
-> 7 there covers this work specifically).
+> as the two "Day 16" sections earlier in this document. This entry keeps the
+> Day 17 label pending a later renumbering pass by the project owner. Full
+> spec, file-by-file detail, and the Definition of Done checklist live in
+> `docs/development/day-17.md` (Section 7) — this entry is a summary only.
 
-Implemented `strategic_synthesis` — the first module that reads across all
-four Content Intelligence domains (Brand, Audience, Market from Day 16's
-Intelligence Reasoning Layer, and Performance from Day 9) and combines
-whichever currently exist for a profile into one grounded cross-domain
-strategic summary. This is the first real implementation of the
-architecture's "Content Intelligence is the Central Brain" principle
-(`docs/product/product-architecture.md`) — previously each domain's LLM
-reasoning stood alone with nothing synthesizing them together:
+Implemented `strategic_synthesis`: the first module (`app/content_intelligence/`)
+that reads across all four Content Intelligence domains at once — Brand,
+Audience, and Market analysis (Day 16) plus Performance insights (Day 9) —
+and combines whichever currently exist for a profile into one grounded
+`ContentIntelligenceSynthesis` row, the first real implementation of the
+architecture's "Content Intelligence is the Central Brain" principle.
 
-- New `app/content_intelligence/` domain module, organized around reading
-  across domains rather than living inside one of them — `grounding.py`
-  (`gather_synthesis_grounding`, deterministically collecting which of
-  Brand/Audience/Market analysis and Performance insights are "available" —
-  an `insufficient_data` component analysis does not count as available,
-  since it carries only a templated placeholder, not real reasoning),
-  `reasoner.py` (`SynthesisReasoner`, the first task in the codebase to
-  declare `required_capabilities={REASONING, STRUCTURED_OUTPUT,
-  LONG_CONTEXT}` on its `AIRequest`, matching the architecture's own
-  `strategic_synthesis` capability example), and `service.py`
-  (`generate_synthesis`, `ContentIntelligenceSynthesisService`,
-  `mark_synthesis_stale_and_invalidate`).
-- `ContentIntelligenceSynthesis` model: `profile_id`, `summary`,
-  `key_themes` (JSONB list), `supporting_analyses` (JSONB list of real
-  `BrandAnalysis`/`AudienceAnalysis`/`MarketAnalysis`/`PerformanceInsight`
-  ids — always the deterministically-collected list, never anything an LLM
-  response could fabricate), `generation_source` (reuses Day 16's
-  `AnalysisGenerationSource` enum rather than duplicating it), `is_current`,
-  `is_stale`, `synthesis_version`, `generated_at`. A partial unique index
-  enforces exactly one `is_current=true` row per profile **at the database
-  level** — closing the gap Day 16 left open (Day 16 only maintained "one
-  current row" through transaction ordering, with no DB constraint).
-- Deterministic fallback: fewer than two available component domains
-  short-circuits to `generation_source=insufficient_data` with a templated
-  message naming what's present/missing, with no AI call made. An `AIError`
-  on two-or-more available domains produces `generation_source=ai_fallback`
-  with a templated summary built from the available domain names — never a
-  fabricated interpretation.
-- Staleness-driven invalidation, not eager regeneration: any component
-  analysis regenerating — `app.services.intelligence_analysis.generate()`
-  for Brand/Audience/Market, `app.services.performance_insight
-  .PerformanceInsightService.create()` for Performance — calls
-  `mark_synthesis_stale_and_invalidate`, which only flips `is_stale=True` on
-  the profile's current synthesis row and drops its cache entry. It does not
-  regenerate the synthesis itself, so several components changing close
-  together cannot trigger a thundering herd of synthesis jobs; regeneration
-  happens lazily, the next time the GET endpoint is called.
-- `strategic_synthesis` registered in `TASK_PROVIDER_POLICY` and run through
-  the Day 15 `ai_jobs` queue exactly like the Day 16 domain tasks — never
-  synchronously inside a request. `app/workers/settings.py` now also imports
-  `app.content_intelligence.service` to register the handler in the worker
-  process.
-- `GET /api/v1/profiles/{profile_id}/synthesis`: returns the current
-  synthesis (200) if it exists and isn't stale; otherwise enqueues
-  regeneration (reusing Day 16's in-flight-job dedup pattern) and returns
-  `202` with a pending-job body. Cached at `profile:{profile_id}:synthesis:
-  workspace:{workspace_id}` (namespaced by `workspace_id` for the same
-  ownership-safety reason as the Day 16 analysis cache key) with
-  `cache_synthesis_ttl_seconds` (1800s default — six times the Day 16 domain
-  analysis TTL), since this is the most expensive reasoning call in the
-  system.
-- Historical synthesis rows are kept (`is_current` moves rather than being
-  overwritten) per the architecture's data-lineage principle.
-- Migration `q0r1s2t3u4` creates the `content_intelligence_synthesis` table,
-  reusing the `analysisgenerationsource` Postgres enum Day 16's `p9q0r1s2t3`
-  migration already created (`create_type=False`) instead of duplicating it.
-  Reversible; single migration head.
+Key points:
 
-Explicitly out of scope for this day: feeding synthesis into
-`ContentOpportunity` scoring or `opportunity_reasoning` (Day 18), exposing
-synthesis as a standalone user-facing feature (it's an internal grounding
-artifact for downstream reasoning only), and any change to how Brand/
-Audience/Market or Performance analysis is itself generated, beyond the new
-staleness-marking call.
+- Fewer than two available component domains (an `insufficient_data`
+  component analysis doesn't count as available), or an AI provider failure,
+  produces `generation_source=insufficient_data`/`ai_fallback` rather than a
+  fabricated synthesis; `supporting_analyses` is always the
+  deterministically-collected list of real component-analysis/insight ids,
+  never anything the LLM returns.
+- Any component regenerating (`intelligence_analysis.generate()` for Brand/
+  Audience/Market, `PerformanceInsightService.create()` for Performance)
+  flips `is_stale=True` and drops the cache entry, without eagerly
+  regenerating — synthesis regenerates lazily on the next `GET`, avoiding a
+  thundering herd when several components change close together.
+- Runs through the Day 15 `ai_jobs` queue like the Day 16 domain tasks;
+  `GET /api/v1/profiles/{profile_id}/synthesis` follows the same
+  enqueue-or-serve, workspace-namespaced-cache pattern as Day 16, with a
+  longer TTL (1800s vs. 300s) since this is the most expensive reasoning
+  call in the system.
+- A database-level partial unique index enforces exactly one
+  `is_current=true` row per profile — closing the gap Day 16 explicitly left
+  open (transaction-ordering only, no DB constraint).
+- Historical rows are preserved on regeneration; explicitly does not feed
+  synthesis into Opportunity scoring/rationale (Day 18).
 
-An independent architecture review (mirroring the Day 16 backend-review
-pass) specifically checked for a repeat of Day 16's cache-key-ownership
-bypass class of bug, cross-tenant `workspace_id` corruption in the
-staleness/cache-invalidation path, LLM-fabricated lineage leaking into
-`supporting_analyses`, and scope creep into Opportunity scoring — found none,
-verdict PASS.
-
-Verification completed with:
-
-- 12 tests in `tests/test_content_intelligence_synthesis.py`: grounded
-  synthesis across all four inputs asserting `supporting_analyses` contains
-  only real ids, insufficient-data fallback with 0 and 1 available
-  components, AI-provider-failure fallback, staleness triggered by a Brand
-  analysis regeneration, staleness triggered by a new Performance insight
-  (through the real `PerformanceInsightService.create` call), regeneration
-  preserving history, the GET endpoint's enqueue-then-serve-fresh-then-
-  serve-from-cache round trip through a real `execute_ai_job` call,
-  job-success cache invalidation, stale-marking cache invalidation,
-  workspace/profile ownership isolation, and the service's `get_or_enqueue`
-  returning the current row without enqueuing when not stale.
-- Full repository regression suite passing: 266 tests. Fixing this feature
-  required one addition to an existing Day 16 test fixture:
-  `tests/test_intelligence_analysis.py`'s autouse Redis-fake fixture needed
-  to also patch `get_redis` in `app.content_intelligence.service`, since
-  `generate()` now calls into that module — not a design gap, just an
-  existing fixture that needed one more monkeypatch line for a new internal
-  collaborator.
-- Ruff check and format check clean for all Day 17 (Synthesis) files.
-- Migration chain validated with a single head (`q0r1s2t3u4`).
+Verification: 12 new tests (`tests/test_content_intelligence_synthesis.py`)
+plus the full 266-test regression suite passing, Ruff check/format clean,
+single migration head (`q0r1s2t3u4`), and an independent architecture review
+(verdict PASS) checked specifically for a repeat of Day 16's cache-key-
+ownership-bypass bug class, cross-tenant `workspace_id` corruption, and
+LLM-fabricated lineage — none found.
 
 ## Architecture After Day 17
 
@@ -795,6 +537,90 @@ domain — it reads across `brand_analysis`, `audience_analysis`,
 `app/content_intelligence/` the first domain module organized around
 cross-domain reading rather than living inside a single Intelligence
 domain.
+
+## Day 18 - Opportunity Reasoning Upgrade
+
+Gave `ContentOpportunity.strategic_rationale` its first LLM reasoning layer,
+grounded in the Day 17 `ContentIntelligenceSynthesis`, without changing the
+opportunity score, score components, priority mapping, or ranking, which
+remain entirely deterministic (`app/ai/strategy/opportunity_scorer.py` was
+not modified).
+
+- New `opportunity_reasoning` AI task (`app/services/llm/opportunity_reasoner.py`,
+  `app/services/opportunity_reasoning.py`), registered in
+  `TASK_PROVIDER_POLICY` alongside the Day 16/17 reasoning tasks. Input is
+  the opportunity's deterministic score components (read from
+  `opportunity_metadata`, never recomputed) plus the profile's current
+  `ContentIntelligenceSynthesis`; output is a natural-language
+  `strategic_rationale`. A synthesis only counts as grounding if it exists
+  and its `generation_source` is `ai`/`ai_fallback` — an `insufficient_data`
+  synthesis is excluded, mirroring Day 17's own component-availability rule.
+- Two new `ContentOpportunity` columns: `rationale_generation_source`
+  (`ai` | `deterministic`) and `rationale_generated_at`. No score-related
+  column was added or changed.
+- Deterministic-first, adapted to async (mirrors the Day 11/12 brief/draft
+  pattern): `ContentOpportunityService.create` persists the opportunity
+  immediately with its existing templated placeholder rationale
+  (`rationale_generation_source=deterministic`, `rationale_generated_at=null`)
+  — the opportunity is usable the instant it's created, never blocked on an
+  LLM call — then enqueues exactly one `opportunity_reasoning` job (Day 15
+  queue) per opportunity in the same transaction. The job
+  (`generate_rationale`) either updates `strategic_rationale` in place and
+  sets `rationale_generation_source=ai`, or, if no substantive synthesis
+  exists yet or the AI provider fails, leaves the deterministic placeholder
+  as final. There is deliberately no separate `ai_fallback` value: in both
+  fallback cases the persisted text is the same deterministic template, not
+  a degraded AI output.
+- Bulk opportunity creation fans out one independent job per opportunity —
+  each call to `ContentOpportunityService.create` enqueues its own job; there
+  is no code path that loops over several opportunities and blocks on AI
+  calls synchronously.
+- Per-profile rate limiting on `opportunity_reasoning` job execution reuses
+  the Day 15 sliding-window limiter (`rate_limit_reasoning_requests_per_window`,
+  new setting), applied inside the worker rather than the HTTP middleware. A
+  new `RateLimitDeferredError` (`app/infrastructure/ratelimit/errors.py`) is
+  raised by the job handler when a profile is over budget;
+  `execute_ai_job` (`app/infrastructure/jobs/worker_tasks.py`) special-cases
+  this exception — distinct from a handler failure — by undoing the attempt
+  count and requeueing the job via arq's `_defer_by`, so a burst of new
+  opportunities for one profile queues excess reasoning jobs rather than
+  dropping or failing them.
+- `strategic_rationale`, `opportunity_score`, `relevance_score`, `priority`,
+  and `opportunity_metadata.score_components` are read by the reasoning job
+  but never written to by it except `strategic_rationale` itself — verified
+  by an explicit regression test asserting all four are byte-identical
+  before and after the reasoning job runs, alongside the full pre-existing
+  Day 7/14 opportunity scoring test suite passing unchanged.
+- Migration `r1s2t3u4v5` adds the two new columns (plus an index on
+  `rationale_generation_source`) to `content_opportunities`. Reversible.
+
+Verification completed with:
+
+- 9 new tests in `tests/test_opportunity_reasoning.py`: instant creation with
+  a usable deterministic placeholder, async reasoning updating the rationale
+  in place, content correspondence between the reasoner's input context and
+  the real synthesis summary/score components (not hallucinated), the
+  no-synthesis-yet fallback, the AI-provider-failure fallback, an
+  `insufficient_data` synthesis correctly not counting as available,
+  score/priority/score-components byte-identical before and after
+  reasoning, bulk creation producing independent per-opportunity jobs rather
+  than a blocking loop, an end-to-end `execute_ai_job` round trip, and the
+  rate limiter deferring (not dropping) an over-budget job.
+- Full repository regression suite passing: 275 tests. The existing
+  `create_opportunity` endpoint now requires an arq pool to fan out the
+  reasoning job, so `tests/conftest.py` gained a new autouse
+  `_default_arq_pool_override` fixture (a mocked pool for every test in the
+  suite, mirroring the Day 17 synthesis test file's own override) — every
+  other test file that creates opportunities through HTTP (briefs, drafts,
+  variations, evaluations, library, published content, audience signals)
+  needed no changes itself.
+- Ruff check and format check clean for all Day 18 files.
+- Migration chain validated with a single head (`r1s2t3u4v5`); not run
+  against a real PostgreSQL instance, matching the project's existing
+  SQLite-vs-Postgres testing convention (no Postgres available in this
+  development environment).
+- All pre-existing Day 7/14 opportunity scoring/ranking tests pass with
+  unchanged outcomes.
 
 ## Platform Infrastructure
 
@@ -996,7 +822,7 @@ Day 17 publishing verification completed with:
 
 ## Known Limitations and Intentionally Deferred Work
 
-The following are intentionally outside Days 1-17 (Day 16's Intelligence
+The following are intentionally outside Days 1-18 (Day 16's Intelligence
 Reasoning Layer is covered separately above and closed two of these gaps —
 see the note there):
 
@@ -1004,8 +830,10 @@ see the note there):
   single-table poller rather than routing through the Day 15 job queue.
 - The rate limiter/idempotency-key helpers wired into any real endpoint
   (built and tested in isolation per Day 15, `rate_limit_enabled` defaults
-  `False`; Day 16 wired `CacheService` into a real read path, but did not
-  use the idempotency-key helper — see Day 16's known limitations above).
+  `False`; Day 16 wired `CacheService` into a real read path, Day 18 wired
+  the sliding-window limiter into `opportunity_reasoning` job execution, but
+  neither used the idempotency-key helper — see Day 16's known limitations
+  above).
 - A database-level constraint enforcing "at most one current row" for
   Day 16's per-domain analysis tables — maintained by application-level
   transaction ordering instead (see Day 16 above).
@@ -1014,7 +842,12 @@ see the note there):
 - Real OAuth flows and real Facebook, Instagram, TikTok, YouTube, LinkedIn, or
   X publishing API calls (`SocialPlatformAdapter.publish` remains a
   manual/no-op placeholder).
-- Performance metrics ingestion from published content (Day 18).
+- Performance metrics ingestion from published content.
+- A learning-alignment scoring factor for `ContentOpportunity` (explicitly
+  out of scope for Day 18 — a scoring-formula change, distinct from Day 18's
+  rationale-only change).
+- Re-triggering `opportunity_reasoning` when an opportunity's
+  `target_objective` changes via `PATCH` (Day 18 only reasons at creation).
 - OAuth and external account connection flows.
 - Image, video, audio, voice, and UGC generation.
 - Full script generation and asset assembly.
@@ -1052,7 +885,7 @@ Known repository-level quality notes:
 
 ## Scope Confirmation
 
-Days 1-17 implement the strategic foundation, intelligence inputs, opportunity
+Days 1-18 implement the strategic foundation, intelligence inputs, opportunity
 evaluation, brief composition, deterministic and AI-assisted draft creation,
 creative variations, quality evaluation, workspace-scoped content library
 retrieval, manual/scheduled publish confirmation with cancellation, and (Day
@@ -1065,7 +898,13 @@ Intelligence (Performance Intelligence already had this from Day 9). Day 17's
 Content Intelligence Synthesis Engine is the first module to read across all
 four Intelligence domains at once, combining them into one grounded
 cross-domain strategic summary — the architecture's "central brain" concept
-given its first real implementation, not yet consumed by Opportunity scoring
-(Day 18). No real social platform API integrations, OAuth flows, advanced
-media generation, autonomous strategy features, or real authenticated-user
-identity were added.
+given its first real implementation. Day 18 is the first consumer of that
+synthesis: `ContentOpportunity.strategic_rationale` gains its own LLM
+reasoning layer, grounded in the synthesis plus the opportunity's existing
+deterministic score components, generated asynchronously after instant,
+non-blocking creation, with a deterministic placeholder as the permanent
+fallback whenever no synthesis exists yet or the AI provider fails — the
+opportunity's score, score components, priority, and ranking remain entirely
+deterministic and unchanged. No real social platform API integrations, OAuth
+flows, advanced media generation, autonomous strategy features, learning-
+alignment scoring, or real authenticated-user identity were added.

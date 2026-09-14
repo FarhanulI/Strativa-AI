@@ -1,10 +1,12 @@
 from typing import Any
 from uuid import UUID
 
+from arq.connections import ArqRedis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.strategy.opportunity_scorer import OpportunityScorer
+from app.infrastructure.jobs.service import submit_job
 from app.models.content_opportunity import (
     ContentOpportunity,
     OpportunityPriority,
@@ -17,6 +19,7 @@ from app.repositories.content_opportunity import ContentOpportunityRepository
 from app.repositories.content_profile import ContentProfileRepository
 from app.repositories.market_intelligence import MarketIntelligenceRepository
 from app.repositories.market_signal import MarketSignalRepository
+from app.services.ai.tasks.types import AITask
 
 
 class ContentOpportunityService:
@@ -30,7 +33,11 @@ class ContentOpportunityService:
         self.scorer = OpportunityScorer()
 
     async def create(
-        self, profile_id: UUID, workspace_id: UUID, **values: Any
+        self,
+        profile_id: UUID,
+        workspace_id: UUID,
+        arq_pool: ArqRedis,
+        **values: Any,
     ) -> ContentOpportunity:
         profile = await self.profile_repository.get_by_id(profile_id, workspace_id)
         if not profile:
@@ -112,6 +119,23 @@ class ContentOpportunityService:
             },
         )
         await self.repository.create(opportunity)
+        # The opportunity is usable immediately with its deterministic
+        # placeholder rationale; opportunity_reasoning runs asynchronously
+        # (Day 15 job queue) and updates strategic_rationale in place once
+        # complete, never blocking creation on an LLM call. One job per
+        # opportunity -- bulk creation (N calls to this method) fans out N
+        # independent jobs rather than looping synchronously.
+        await submit_job(
+            self.session,
+            arq_pool,
+            AITask.OPPORTUNITY_REASONING.value,
+            profile_id,
+            {
+                "opportunity_id": str(opportunity.id),
+                "profile_id": str(profile_id),
+                "workspace_id": str(workspace_id),
+            },
+        )
         await self.session.commit()
         return opportunity
 

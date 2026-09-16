@@ -1,7 +1,12 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Placeholder only -- never a real production signing key. `Settings`
+# validates below that this exact value cannot be used outside
+# `environment == "development"`.
+_INSECURE_DEFAULT_JWT_SECRET_KEY = "insecure-dev-secret-change-in-production"
 
 
 class Settings(BaseSettings):
@@ -40,6 +45,15 @@ class Settings(BaseSettings):
     # reasoning call in the system -- a longer TTL than component analyses.
     cache_synthesis_ttl_seconds: int = 1800
 
+    # Content Library (app/services/content_library.py) -- only the default
+    # unfiltered, first-page, default-sort view is cached (highest-traffic
+    # query pattern); a short TTL bounds staleness since drafts change often.
+    library_default_view_cache_ttl_seconds: int = 30
+    content_library_default_page_size: int = 20
+    # Hard server-side cap regardless of client-requested page size --
+    # cursor pagination is disallowed from ever returning unbounded pages.
+    content_library_max_page_size: int = 50
+
     # Rate limiting (app/infrastructure/ratelimit) — a lower ceiling for
     # AI-triggering routes than plain CRUD routes; see policy.py.
     # Off by default: this is foundational middleware, not yet tuned per
@@ -73,11 +87,41 @@ class Settings(BaseSettings):
     # Distributed locks (app/infrastructure/locks)
     lock_default_timeout_seconds: float = 30.0
 
+    # Authentication (app/auth) -- Day 20. HS256 is used rather than RS256:
+    # this is a single-backend MVP (one API process family sharing one
+    # secret), so asymmetric signing buys nothing yet and adds key
+    # management overhead; revisit if a separate service ever needs to
+    # verify tokens without holding the signing secret.
+    jwt_secret_key: str = _INSECURE_DEFAULT_JWT_SECRET_KEY
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_ttl_minutes: int = 15
+    jwt_refresh_token_ttl_days: int = 30
+    password_reset_token_ttl_minutes: int = 30
+
+    # Login-endpoint rate limiting (app/infrastructure/ratelimit) -- a much
+    # tighter ceiling than plain CRUD/AI routes, applied by exact-path
+    # match against `/auth/login`, specifically to resist credential
+    # stuffing.
+    auth_login_rate_limit_requests_per_window: int = 5
+    auth_login_rate_limit_window_seconds: int = 60
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
     )
+
+    @model_validator(mode="after")
+    def _validate_jwt_secret(self) -> "Settings":
+        if (
+            self.environment != "development"
+            and self.jwt_secret_key == _INSECURE_DEFAULT_JWT_SECRET_KEY
+        ):
+            raise ValueError(
+                "jwt_secret_key must be set via environment/.env outside development "
+                "(never hardcode a production signing key)"
+            )
+        return self
 
 
 @lru_cache

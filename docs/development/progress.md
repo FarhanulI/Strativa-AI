@@ -2,12 +2,17 @@
 
 ## Current Status
 
-Days 1 through 18, plus Day 16's Intelligence Reasoning Layer (see its
+Days 1 through 19, plus Day 16's Intelligence Reasoning Layer (see its
 numbering note below), establish the first complete strategic content loop
 and give Brand, Audience, and Market Intelligence their first LLM
 reasoning layer. Day 18 gives the Opportunity Engine's `strategic_rationale`
 its first LLM reasoning layer as well, grounded in the Day 17 cross-domain
-synthesis:
+synthesis. Day 19 upgrades the Day 16 Content Library retrieval layer to a
+production-grade one: cursor-based pagination, Postgres full-text search,
+and its first real read-through cache. Day 20 adds the system's first real
+authentication layer — JWT login/refresh/logout, Redis-based revocation,
+and password reset — and points the Day 15 rate limiter at real
+authenticated identity instead of a client-supplied header:
 
 ```text
 Understand
@@ -678,6 +683,227 @@ Verification completed with:
 - All pre-existing Day 7/14 opportunity scoring/ranking tests pass with
   unchanged outcomes.
 
+## Day 19 - Content Library (Production-Grade Retrieval)
+
+Upgraded the Day 16 Content Library retrieval layer over `ContentDraft` for
+concurrent read load, replacing offset pagination and `ILIKE` search with
+mechanisms that don't degrade at scale. No new domain model was introduced;
+`ContentDraftRepository`/`ContentLibraryService` still compose queries over
+the existing `ContentDraft` table, matching Day 16's original design intent.
+
+- **Cursor pagination**: `GET /api/v1/library` now takes an opaque `cursor`
+  (base64 of `{sort_by, sort_order, sort_key, id}`) instead of `skip`/`limit`.
+  Offset pagination was removed entirely from this endpoint (not just
+  deprecated) because it degrades under concurrent writes and large tables.
+  Every query orders by `(sort_column, id)` — `id` as a permanent secondary
+  sort key, whether or not a cursor is present — so rows sharing an
+  identical `created_at`/`updated_at` still get a total, stable order. The
+  boundary condition is `sort_column < cursor_value OR (sort_column =
+  cursor_value AND id < cursor_id)` (reversed for ascending sort), built
+  with plain `OR`/`AND` rather than SQL row-value comparison, so it needs no
+  dialect-specific tuple-comparison support. `InvalidCursorError` (a
+  `ValueError` subclass) is raised for a malformed cursor or one whose
+  `sort_by`/`sort_order` no longer matches the request, and maps to `400`
+  distinctly from the `404` used for ownership failures.
+- **Composite index**: migration `u4v5w6x7y8` adds
+  `ix_content_drafts_profile_status_created_id` on
+  `(profile_id, status, created_at DESC, id)`, mirrored in the
+  `ContentDraft` model's `__table_args__` so the SQLite test schema
+  (built via `Base.metadata.create_all`) carries the same index shape.
+- **Full-text search**: on Postgres, `content_drafts.search_vector` is a
+  `GENERATED ALWAYS AS (to_tsvector('english', title || hook || caption))
+  STORED` column (added by raw SQL in the same migration, guarded by a
+  `bind.dialect.name == "postgresql"` check — a real generated column,
+  preferred over an application trigger per the day's spec) with a GIN
+  index, queried via `search_vector @@ plainto_tsquery(...)`. The
+  `ContentDraft` model declares `search_vector` as
+  `TSVECTOR().with_variant(Text(), "sqlite")`, never assigned to from
+  Python, so the ORM never fights Postgres's own generated value. On
+  SQLite (this project's test database, per its established Postgres/SQLite
+  testing convention — see "Known Limitations") the column is a plain,
+  always-`NULL` text column, and `ContentDraftRepository._search_clause`
+  branches on `session.get_bind().dialect.name` to fall back to
+  `ILIKE`/`LIKE` there — meaning GIN index usage itself is asserted by the
+  migration/model, not exercised by the test suite, matching the same
+  documented gap as the Day 13 partial-unique-index and Day 15
+  connection-pool settings.
+- **Hard max page size**: `page_size` is clamped server-side to
+  `settings.content_library_max_page_size` (default 50) in both the router
+  and the service, regardless of what the client requests — a
+  `page_size=1000` request silently returns at most 50 rows rather than
+  erroring or returning everything.
+- **Default-view cache**: `GET /api/v1/library` read-through-caches only
+  the fully unfiltered, first-page (`cursor=None`), default-sort
+  (`created_at desc`), default-page-size view — the highest-traffic query
+  pattern — following the exact router-level Redis pattern already used by
+  `app/api/v1/intelligence_analysis.py` (`get_redis()` called directly in
+  the route handler, not injected via `Depends`). The cache key is
+  `workspace:{workspace_id}:library:default:page_size={page_size}`;
+  `workspace_id` is part of the key (not just checked after a hit) so a
+  cache hit can never cross a tenant boundary. TTL is a new
+  `library_default_view_cache_ttl_seconds` setting (default 30s) —
+  deliberately much shorter than the general `cache_default_ttl_seconds`
+  (300s) since drafts change often. Any other filter/sort/cursor/page_size
+  combination bypasses the cache entirely (read and write). Draft create
+  (`ContentCreationService.create`), draft update
+  (`ContentCreationService.update`), and variation selection
+  (`ContentDraftVariationService.select`, which syncs a selected variation
+  into `ContentDraft.hook`/`caption` per Day 13) each call a new
+  `invalidate_library_cache(workspace_id)` helper
+  (`app/services/content_library.py`) after `commit()`, which drops every
+  cached library key for that workspace via the Day 15 `CacheService`'s
+  `invalidate_prefix` (non-blocking `SCAN`, not `KEYS`).
+- Because cache invalidation is now reachable from the widely-shared draft
+  create/update/variation-selection code paths, `tests/conftest.py` gained
+  a new autouse `_default_cache_redis_override` fixture (mirroring the Day
+  18 `_default_arq_pool_override` pattern) that patches
+  `app.services.content_library.get_redis` to a `fakeredis` instance for
+  every test in the suite — no real Redis is available in this development
+  environment. `tests/test_content_library.py` additionally patches the
+  same target plus `app.api.v1.content_library.get_redis` with its own
+  fake instance to assert on cache hits and invalidation directly.
+
+Verification completed with:
+
+- 11 tests in `tests/test_content_library.py`: filters/sorting, cursor
+  pagination across three pages with no gap/overlap, an explicit
+  concurrent-insert-between-page-fetches scenario proving the cursor is
+  unaffected by a row landing at the very top of the default (newest-first)
+  order — the exact failure mode offset pagination is prone to — an
+  invalid/malformed cursor rejected with `400`, a cursor rejected with
+  `400` when reused against a different `sort_by`, max-page-size
+  enforcement (`page_size=1000` capped to 50 with 60 drafts present),
+  date-range filters, search matching title/hook/caption, lineage
+  retrieval, cross-workspace/cross-profile isolation (`404`), the
+  empty/unknown-draft paths, and default-view cache-hit-then-invalidation
+  on create.
+- Full repository regression suite passing: 284 tests (275 pre-existing +
+  9 net new — 6 Day 16 tests were rewritten in place for the new response
+  shape rather than added alongside the old ones).
+- Ruff check and format check clean for all touched Day 19 files
+  (`app/models/content_draft.py`, `app/repositories/content_draft.py`,
+  `app/services/content_library.py`,
+  `app/services/content_creation/service.py`,
+  `app/services/content_creation/variation_service.py`,
+  `app/api/v1/content_library.py`, `app/schemas/content_library.py`,
+  `app/core/config.py`, `tests/test_content_library.py`,
+  `tests/conftest.py`, and the new migration).
+- Migration chain validated with a single head (`u4v5w6x7y8`); the
+  Postgres-only DDL branch (generated `search_vector` column, GIN index)
+  was not run against a real PostgreSQL instance, matching this project's
+  existing SQLite-vs-Postgres testing convention (no Postgres available in
+  this development environment) — the same documented gap as Day 13's
+  partial unique index and Day 15's connection pool/statement-timeout
+  settings.
+
+Known follow-up (should-fix, not addressed this day): variation generation
+(`ContentDraftVariationService.generate`, which does not itself mutate
+`ContentDraft` fields) does not invalidate the library cache, since it
+never changes what `/library` would return; only `select` (which does
+mutate `hook`/`caption`) does. If a future day changes `generate` to touch
+draft-level fields, it should call `invalidate_library_cache` too.
+
+## Day 20 - Authentication Foundation: JWT Issuance, Refresh & Redis-Based Revocation
+
+Added the system's first real authentication layer. Full spec:
+`docs/development/day-20.md`.
+
+**Scope correction made at the start of this day**: code inspection
+confirmed there is no ownership-chain enforcement anywhere in the
+codebase — `WorkspaceMember.user_id` is a bare `String(255)`, not a
+foreign key; every Day 15-19 router trusts a client-supplied
+`workspace_id`/`profile_id` with no verification; the Day 15 rate
+limiter's identity was an `X-User-Id` header or client IP. This is a live
+IDOR vulnerability, independent of JWT auth. Day 20 was scoped to
+Authentication only, with one exception: patching the Day 15 rate
+limiter's identity source. No ownership-chain retrofit was performed on
+Days 15-19 routers.
+
+- New `app/auth/` module: `User`, `RefreshToken`, `PasswordResetToken`
+  models; argon2 password hashing with a documented cost factor; opaque,
+  high-entropy refresh/reset tokens (`secrets.token_urlsafe(48)`) stored
+  server-side only as a SHA-256 hash.
+- `POST /auth/login` issues a short-TTL JWT access token (HS256; a single
+  backend serves this MVP, so asymmetric signing isn't yet justified) plus
+  a longer-TTL opaque refresh token. `POST /auth/refresh` rotates the
+  refresh token on every use, grouped by `session_id`; presenting an
+  already-rotated (reused/stale) token revokes the entire session rather
+  than just rejecting that one token — defense-in-depth against a stolen
+  token being replayed after rotation. `POST /auth/logout` adds the access
+  token's `jti` to Redis (`revoked_jti:{jti}`, TTL = its remaining
+  validity, self-expiring) and revokes the refresh token's session,
+  reusing the Day 15 shared Redis connection rather than a second client.
+- `get_current_user` (`app/auth/dependencies.py`) is the one reusable JWT
+  verification dependency — validates signature/expiry, checks the Redis
+  revocation list, and returns an `AuthenticatedUser`. Every future
+  protected route, including Day 21's ownership-chain checks, is expected
+  to depend on this rather than calling `decode_access_token` directly.
+  JWT claims are `sub`, `jti`, `iat`/`exp`, and `workspace_ids` — the
+  latter is a fast-path hint only, computed from the same unenforced
+  `WorkspaceMember.user_id` string match noted above, and is never by
+  itself sufficient to authorize access to a specific workspace's
+  resource.
+- Password reset (`/auth/password-reset/request`, `/auth/password-reset/confirm`)
+  is token-based, time-limited, and single-use; the request endpoint
+  always returns the same generic message regardless of whether the email
+  exists, and email delivery is a structlog stub (`send_password_reset_email`)
+  since no email provider is configured anywhere in this stack yet.
+- Identical error message (`"Invalid email or password"`) for wrong-password
+  and unknown-email, with a dummy-hash `verify_password` call on the
+  unknown-email path so the response carries no timing signal about
+  account existence.
+- `POST /auth/login` is registered under the Day 15 rate-limit middleware
+  with its own dedicated, tight policy (`RouteCategory.AUTH_LOGIN`,
+  `auth_login_rate_limit_requests_per_window`/`_window_seconds` settings).
+- **Rate limiter identity patch**: `app/infrastructure/ratelimit/middleware.py`
+  now derives identity from `get_current_user`'s verified JWT (via
+  `try_get_request_identity`) when a valid bearer token is present, falling
+  back to client IP otherwise. The previous `X-User-Id` header trust was
+  removed entirely rather than kept as a secondary fallback — once real
+  JWT identity exists, continuing to also trust a client-supplied header
+  would be an inconsistent, avoidable downgrade in the identity guarantee
+  the limiter is meant to provide.
+- Migration `v5w6x7y8z9` (head, down-revision `u4v5w6x7y8`) adds `users`,
+  `refresh_tokens`, `password_reset_tokens`. `User.id` is a UUID, matching
+  the rest of the codebase's convention and compatible with a future FK
+  from `WorkspaceMember.user_id`.
+- JWT signing key is environment-driven; `app/core/config.py` rejects the
+  built-in insecure default secret outside local development via a
+  validator, so a real deployment cannot silently run with a hardcoded key.
+
+### KNOWN CRITICAL GAP
+
+**Days 15-19 accept a client-supplied `workspace_id`/`profile_id` on every
+request with no verification that the authenticated caller actually owns
+or belongs to that workspace/profile.** `WorkspaceMember.user_id` remains a
+bare, unenforced `String(255)` with no foreign key to `User.id`. Day 20
+adds real authentication but does **not** retrofit ownership-chain
+enforcement onto any existing router — that retrofit is tracked as **Day
+21 - Ownership-Chain Enforcement Retrofit**. Days 15-19 must not be
+considered auth-complete until Day 21 lands.
+
+Verification completed with:
+
+- 12 new tests in `tests/test_auth.py`: login success/failure, identical
+  error message for wrong-password vs. unknown-email, expired-token
+  rejection, refresh rotation, reused-stale-refresh-token rejection,
+  logout revoking a token with the immediate next request rejected, a
+  revoked `jti` present in Redis with the correct remaining TTL, password
+  reset end-to-end (including reuse-after-confirm rejected), login rate
+  limiting, and the rate limiter keying off real authenticated identity
+  rather than a spoofed `X-User-Id` header. All fixtures seed `User`/
+  `Workspace` directly (`seed_user`, `seed_workspace` in
+  `tests/conftest.py`), matching the Days 15-19 test-seeding convention —
+  no signup endpoint exists (MVP: one User maps to exactly one Workspace).
+- Full repository regression suite passing: 296 tests.
+- Ruff check and format check clean for all Day 20 files.
+- Migration chain validated as a single head (`v5w6x7y8z9`) with no
+  branching; not run against a real PostgreSQL instance, matching this
+  project's existing SQLite-vs-Postgres testing convention (no Postgres
+  available in this development environment).
+- No ownership-chain regression tests were added — out of scope for this
+  day by design (see "KNOWN CRITICAL GAP" above).
+
 ## Platform Infrastructure
 
 Reference material for Days 16+ so they can build on this instead of
@@ -878,12 +1104,20 @@ Day 17 publishing verification completed with:
 
 ## Known Limitations and Intentionally Deferred Work
 
-The following are intentionally outside Days 1-18 (Day 16's Intelligence
+The following are intentionally outside Days 1-19 (Day 16's Intelligence
 Reasoning Layer is covered separately above and closed two of these gaps —
 see the note there):
 
 - The Day 17 publish scheduler still deliberately remains its own narrow
   single-table poller rather than routing through the Day 15 job queue.
+- `ContentDraftVariationService.generate` does not invalidate the Day 19
+  library cache (see Day 19's own "Known follow-up" note above) since it
+  never mutates a `ContentDraft` field itself; only variation `select` does.
+- Day 19's Postgres-only DDL (the generated `search_vector` column and its
+  GIN index) has not been run against a real PostgreSQL instance — GIN
+  index usage is asserted by the migration/model, not exercised by the
+  SQLite test suite, matching the same documented Postgres/SQLite testing
+  gap as Day 13's partial unique index.
 - The rate limiter/idempotency-key helpers wired into any real endpoint
   (built and tested in isolation per Day 15, `rate_limit_enabled` defaults
   `False`; Day 16 wired `CacheService` into a real read path, Day 18 wired
@@ -914,10 +1148,14 @@ see the note there):
 - New AI providers beyond the current provider abstraction and Gemini path.
 - Trend detection and autonomous market research.
 - A generic analytics dashboard.
-- A real authenticated-user identity layer (the Day 15 rate limiter's
-  "per user" bucket is a header/client-address placeholder, not
-  authorization — see docs/product/product-architecture.md "Identity,
-  Tenancy, and Authorization").
+- **Ownership-chain enforcement on Days 15-19 routers** — every existing
+  router still trusts a client-supplied `workspace_id`/`profile_id` with
+  no verification that the authenticated caller belongs to it;
+  `WorkspaceMember.user_id` has no foreign key to `User.id`. Day 20 added
+  real authentication but deliberately did not retrofit this. Tracked as
+  Day 21 - Ownership-Chain Enforcement Retrofit (see Day 20's "KNOWN
+  CRITICAL GAP" note above). Days 15-19 must not be considered
+  auth-complete until Day 21 lands.
 
 Known repository-level quality notes:
 
@@ -941,7 +1179,7 @@ Known repository-level quality notes:
 
 ## Scope Confirmation
 
-Days 1-18 implement the strategic foundation, intelligence inputs, opportunity
+Days 1-19 implement the strategic foundation, intelligence inputs, opportunity
 evaluation, brief composition, deterministic and AI-assisted draft creation,
 creative variations, quality evaluation, workspace-scoped content library
 retrieval, manual/scheduled publish confirmation with cancellation, and (Day
@@ -961,6 +1199,19 @@ deterministic score components, generated asynchronously after instant,
 non-blocking creation, with a deterministic placeholder as the permanent
 fallback whenever no synthesis exists yet or the AI provider fails — the
 opportunity's score, score components, priority, and ranking remain entirely
-deterministic and unchanged. No real social platform API integrations, OAuth
-flows, advanced media generation, autonomous strategy features, learning-
-alignment scoring, or real authenticated-user identity were added.
+deterministic and unchanged. Day 19 upgrades the Day 16 Content Library into
+a production-grade retrieval layer: cursor-based pagination replaces offset
+pagination entirely on that endpoint, Postgres generated-column full-text
+search replaces `ILIKE`, a composite index supports the default view's
+access pattern, and that default view gets the system's first real
+read-through cache with explicit invalidation on draft mutation. Day 20
+adds the system's first real authenticated-user identity layer — JWT
+login/refresh/logout with Redis-based revocation and password reset —
+scoped strictly to authenticating an existing user against an existing
+workspace (no signup), and repoints the Day 15 rate limiter at that real
+identity instead of a client-supplied header. Day 20 explicitly does not
+retrofit ownership-chain enforcement onto Days 15-19 (see its "KNOWN
+CRITICAL GAP" note); that retrofit is Day 21. No real social platform API
+integrations, OAuth flows, advanced media generation, autonomous strategy
+features, learning-alignment scoring, or draft editing/publishing changes
+were added.

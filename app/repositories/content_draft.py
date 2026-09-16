@@ -1,13 +1,18 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.content_brief import ContentBrief
 from app.models.content_draft import ContentDraft
 from app.models.content_profile import ContentProfile
+
+_SORT_COLUMNS = {
+    "created_at": ContentDraft.created_at,
+    "updated_at": ContentDraft.updated_at,
+}
 
 
 class ContentDraftRepository:
@@ -49,7 +54,7 @@ class ContentDraftRepository:
         )
         return list(result.scalars().all())
 
-    async def list_library(
+    async def list_library_cursor(
         self,
         workspace_id: UUID,
         profile_id: UUID | None = None,
@@ -61,8 +66,9 @@ class ContentDraftRepository:
         search: str | None = None,
         sort_by: str = "created_at",
         sort_order: str = "desc",
-        skip: int = 0,
-        limit: int = 100,
+        cursor_sort_key: datetime | None = None,
+        cursor_id: UUID | None = None,
+        limit: int = 20,
     ) -> list[ContentDraft]:
         statement = (
             select(ContentDraft)
@@ -82,21 +88,46 @@ class ContentDraftRepository:
         if created_before is not None:
             statement = statement.where(ContentDraft.created_at <= created_before)
         if search is not None and search.strip():
-            query = f"%{search.strip()}%"
-            statement = statement.where(
-                or_(
-                    ContentDraft.title.ilike(query),
-                    ContentDraft.hook.ilike(query),
-                    ContentDraft.caption.ilike(query),
+            statement = statement.where(self._search_clause(search.strip()))
+
+        sort_column = _SORT_COLUMNS.get(sort_by, ContentDraft.created_at)
+        descending = sort_order != "asc"
+
+        if cursor_sort_key is not None and cursor_id is not None:
+            if descending:
+                boundary = or_(
+                    sort_column < cursor_sort_key,
+                    and_(sort_column == cursor_sort_key, ContentDraft.id < cursor_id),
                 )
-            )
-        sort_column = {
-            "created_at": ContentDraft.created_at,
-            "updated_at": ContentDraft.updated_at,
-        }.get(sort_by, ContentDraft.created_at)
-        order_by = sort_column.desc() if sort_order == "desc" else sort_column.asc()
-        result = await self.session.execute(statement.order_by(order_by).offset(skip).limit(limit))
+            else:
+                boundary = or_(
+                    sort_column > cursor_sort_key,
+                    and_(sort_column == cursor_sort_key, ContentDraft.id > cursor_id),
+                )
+            statement = statement.where(boundary)
+
+        # id is always the secondary sort key (never only the primary
+        # sort_column) so rows with an identical sort_key still get a
+        # total, stable order -- required for the (sort_key, id) cursor to
+        # never skip or duplicate a row across page fetches.
+        order_by = (
+            (sort_column.desc(), ContentDraft.id.desc())
+            if descending
+            else (sort_column.asc(), ContentDraft.id.asc())
+        )
+        result = await self.session.execute(statement.order_by(*order_by).limit(limit))
         return list(result.scalars().all())
+
+    def _search_clause(self, term: str):
+        dialect = self.session.get_bind().dialect.name
+        if dialect == "postgresql":
+            return ContentDraft.search_vector.op("@@")(func.plainto_tsquery("english", term))
+        pattern = f"%{term}%"
+        return or_(
+            ContentDraft.title.ilike(pattern),
+            ContentDraft.hook.ilike(pattern),
+            ContentDraft.caption.ilike(pattern),
+        )
 
     async def get_with_lineage(self, draft_id: UUID, workspace_id: UUID) -> ContentDraft | None:
         statement = (

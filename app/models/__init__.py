@@ -1,3 +1,4 @@
+from app.auth.models import PasswordResetToken, RefreshToken, User
 from app.core.database import Base
 from app.models.ai_job import AIJob, JobStatus
 from app.models.audience_intelligence import (
@@ -30,6 +31,7 @@ from app.models.content_draft_variation import (
     VariationGenerationSource,
     VariationType,
 )
+from app.models.content_intelligence_synthesis import ContentIntelligenceSynthesis
 from app.models.content_opportunity import (
     ContentOpportunity,
     OpportunityPriority,
@@ -37,7 +39,6 @@ from app.models.content_opportunity import (
     OpportunityStatus,
     TargetObjective,
 )
-from app.models.content_intelligence_synthesis import ContentIntelligenceSynthesis
 from app.models.content_performance import ContentPerformance
 from app.models.content_profile import ContentProfile, ContentProfileType
 from app.models.intelligence_analysis import (
@@ -71,6 +72,9 @@ __all__ = [
     "AudienceSignalType",
     "Base",
     "Brand",
+    "PasswordResetToken",
+    "RefreshToken",
+    "User",
     "BusinessContext",
     "Competitor",
     "ContentOpportunity",

@@ -20,6 +20,7 @@ from app.services.content_creation.variation_prompts import (
     CAPTION_PROMPT_VERSION,
     HOOK_PROMPT_VERSION,
 )
+from app.services.content_library import invalidate_library_cache
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,7 @@ class ContentDraftVariationService:
         self._synchronize_draft(draft, variation)
         await self.draft_repository.update(draft)
         await self.session.commit()
+        await invalidate_library_cache(workspace_id)
         return variation
 
     async def _load_draft(

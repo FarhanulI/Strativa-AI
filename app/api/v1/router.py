@@ -4,6 +4,7 @@ from app.api.v1.audience_intelligence import router as audience_intelligence_rou
 from app.api.v1.audience_objections import router as audience_objections_router
 from app.api.v1.audience_questions import router as audience_questions_router
 from app.api.v1.audience_signals import router as audience_signals_router
+from app.api.v1.auth import router as auth_router
 from app.api.v1.brands import router as brands_router
 from app.api.v1.business_context import router as business_context_router
 from app.api.v1.competitors import router as competitors_router
@@ -34,6 +35,7 @@ from app.api.v1.workspaces import router as workspaces_router
 
 api_router = APIRouter()
 api_router.include_router(health_router)
+api_router.include_router(auth_router)
 api_router.include_router(workspaces_router)
 api_router.include_router(content_profiles_router)
 api_router.include_router(content_opportunities_router)

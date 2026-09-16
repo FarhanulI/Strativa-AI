@@ -18,6 +18,7 @@ from app.services.ai.router import AIRouter
 from app.services.content_creation.creator import ContentCreator
 from app.services.content_creation.deterministic import DeterministicContentCreator
 from app.services.content_creation.prompts import PROMPT_VERSION
+from app.services.content_library import invalidate_library_cache
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,7 @@ class ContentCreationService:
         )
         await self.repository.create(draft)
         await self.session.commit()
+        await invalidate_library_cache(workspace_id)
         return draft
 
     async def get(
@@ -122,6 +124,7 @@ class ContentCreationService:
             draft.status = values["status"]
         await self.repository.update(draft)
         await self.session.commit()
+        await invalidate_library_cache(workspace_id)
         return draft
 
     async def delete(self, profile_id: UUID, draft_id: UUID, workspace_id: UUID) -> bool:

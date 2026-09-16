@@ -1012,6 +1012,23 @@ Rules:
 
 Until identity and membership exist, the system is an internal or controlled-beta workspace, not a public multi-tenant product.
 
+**Implementation status (Day 20):** the "Authenticated User" step of this
+chain now exists — `app/auth/` issues and verifies JWT access tokens
+(login, refresh with mandatory rotation, logout via Redis-based `jti`
+revocation, password reset), and `app/auth/dependencies.get_current_user`
+is the one reusable dependency that establishes caller identity from a
+verified credential, per the rule above. The chain stops there, however:
+**every step below "Authenticated User" — Workspace Membership, Role/
+Permissions, and the full ownership-chain validation on resource
+lookups — remains unimplemented.** `WorkspaceMember.user_id` is a bare,
+unenforced `String(255)` with no foreign key to `User.id`, and every
+Day 15-19 router still trusts a client-supplied `workspace_id`/
+`profile_id` directly rather than deriving it from membership. This is a
+live cross-tenant access gap, tracked as Day 21 - Ownership-Chain
+Enforcement Retrofit (see `docs/development/progress.md`, Day 20 entry).
+Days 15-19 must not be treated as satisfying this section until Day 21
+lands.
+
 ---
 
 # Platform Security Boundary

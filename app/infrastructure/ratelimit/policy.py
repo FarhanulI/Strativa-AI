@@ -15,6 +15,7 @@ class RouteCategory(StrEnum):
 
     CRUD = "crud"
     AI_TRIGGERING = "ai_triggering"
+    AUTH_LOGIN = "auth_login"
 
 
 @dataclass(frozen=True)
@@ -23,7 +24,15 @@ class RateLimitRule:
     window_seconds: int
 
 
+# Exact-path match (not prefix-substring like the AI-triggering check) --
+# credential-stuffing resistance only needs to apply to the login
+# endpoint itself, not everything under /auth.
+_AUTH_LOGIN_PATH_SUFFIX = "/auth/login"
+
+
 def classify_route(path: str) -> RouteCategory:
+    if path.rstrip("/").endswith(_AUTH_LOGIN_PATH_SUFFIX):
+        return RouteCategory.AUTH_LOGIN
     for prefix in settings.ai_triggering_route_prefixes:
         if prefix in path:
             return RouteCategory.AI_TRIGGERING
@@ -35,6 +44,11 @@ def rule_for_category(category: RouteCategory) -> RateLimitRule:
         return RateLimitRule(
             max_requests=settings.rate_limit_ai_requests_per_window,
             window_seconds=settings.rate_limit_window_seconds,
+        )
+    if category is RouteCategory.AUTH_LOGIN:
+        return RateLimitRule(
+            max_requests=settings.auth_login_rate_limit_requests_per_window,
+            window_seconds=settings.auth_login_rate_limit_window_seconds,
         )
     return RateLimitRule(
         max_requests=settings.rate_limit_crud_requests_per_window,

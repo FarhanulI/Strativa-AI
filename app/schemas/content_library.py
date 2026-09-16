@@ -47,3 +47,9 @@ class ContentLibraryItemResponse(BaseModel):
     draft: ContentDraftResponse
     brief: ContentBriefLineageSummary
     opportunity: ContentOpportunityLineageSummary
+
+
+class ContentLibraryListResponse(BaseModel):
+    items: list[ContentDraftResponse]
+    next_cursor: str | None = None
+    has_more: bool = False

@@ -3,6 +3,7 @@ import uuid
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from tests.conftest import authenticate_as_workspace_owner
 
 
 async def _create_workspace(client: AsyncClient, slug: str) -> str:
@@ -36,9 +37,10 @@ async def _create_audience_intelligence(
     return response.json()["id"]
 
 
-async def test_create_pain_point(override_get_db) -> None:
+async def test_create_pain_point(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "pain-create")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Test Creator")
         audience_id = await _create_audience_intelligence(client, workspace_id, profile_id)
 
@@ -60,9 +62,10 @@ async def test_create_pain_point(override_get_db) -> None:
     assert data["frequency"] == 5
 
 
-async def test_list_pain_points(override_get_db) -> None:
+async def test_list_pain_points(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "pain-list")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Test Creator")
         audience_id = await _create_audience_intelligence(client, workspace_id, profile_id)
 
@@ -87,9 +90,10 @@ async def test_list_pain_points(override_get_db) -> None:
     assert len(data) == 2
 
 
-async def test_get_pain_point(override_get_db) -> None:
+async def test_get_pain_point(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "pain-get")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Test Creator")
         audience_id = await _create_audience_intelligence(client, workspace_id, profile_id)
 
@@ -109,9 +113,10 @@ async def test_get_pain_point(override_get_db) -> None:
     assert response.json()["title"] == "Test Pain"
 
 
-async def test_update_pain_point(override_get_db) -> None:
+async def test_update_pain_point(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "pain-update")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Test Creator")
         audience_id = await _create_audience_intelligence(client, workspace_id, profile_id)
 
@@ -132,9 +137,10 @@ async def test_update_pain_point(override_get_db) -> None:
     assert response.json()["severity"] == 5
 
 
-async def test_delete_pain_point(override_get_db) -> None:
+async def test_delete_pain_point(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "pain-delete")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Test Creator")
         audience_id = await _create_audience_intelligence(client, workspace_id, profile_id)
 
@@ -153,9 +159,10 @@ async def test_delete_pain_point(override_get_db) -> None:
     assert response.status_code == 204
 
 
-async def test_severity_validation(override_get_db) -> None:
+async def test_severity_validation(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "pain-severity")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Test Creator")
         audience_id = await _create_audience_intelligence(client, workspace_id, profile_id)
 
@@ -168,9 +175,10 @@ async def test_severity_validation(override_get_db) -> None:
     assert response.status_code == 422
 
 
-async def test_frequency_validation(override_get_db) -> None:
+async def test_frequency_validation(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "pain-frequency")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Test Creator")
         audience_id = await _create_audience_intelligence(client, workspace_id, profile_id)
 
@@ -183,13 +191,15 @@ async def test_frequency_validation(override_get_db) -> None:
     assert response.status_code == 422
 
 
-async def test_pain_point_workspace_isolation(override_get_db) -> None:
+async def test_pain_point_workspace_isolation(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace1_id = await _create_workspace(client, "pain-iso-1")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace1_id))
         workspace2_id = await _create_workspace(client, "pain-iso-2")
         profile_id = await _create_profile(client, workspace1_id, "Test Creator")
         audience_id = await _create_audience_intelligence(client, workspace1_id, profile_id)
 
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace2_id))
         response = await client.get(
             f"/api/v1/audience-intelligence/{audience_id}/pain-points",
             params={"workspace_id": workspace2_id},

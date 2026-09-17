@@ -1,8 +1,11 @@
+import uuid
+
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
 from app.services.ai.router import AIResult
 from app.services.ai.schemas.responses import AIResponseMetadata
+from tests.conftest import authenticate_as_workspace_owner
 from tests.test_content_briefs import create_opportunity, create_profile, create_workspace
 
 
@@ -25,9 +28,10 @@ async def create_ready_brief(client: AsyncClient, workspace_id: str, profile_id:
     return brief_id
 
 
-async def test_deterministic_draft_crud_and_lifecycle(override_get_db) -> None:
+async def test_deterministic_draft_crud_and_lifecycle(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "draft-crud")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
         created = await client.post(
@@ -64,9 +68,11 @@ async def test_deterministic_draft_crud_and_lifecycle(override_get_db) -> None:
 
 async def test_manual_draft_preserves_content_and_rejects_non_executable_brief(
     override_get_db,
+    db_session,
 ) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "draft-manual")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         opportunity_id = await create_opportunity(client, workspace_id, profile_id)
         brief = await client.post(
@@ -104,7 +110,7 @@ async def test_manual_draft_preserves_content_and_rejects_non_executable_brief(
         assert created.json()["body"] == "Manual body"
 
 
-async def test_ai_draft_and_failure_fallback(monkeypatch, override_get_db) -> None:
+async def test_ai_draft_and_failure_fallback(monkeypatch, override_get_db, db_session) -> None:
     async def fake_create(self, brief):
         from app.schemas.content_draft import ContentCreationLLMResult
 
@@ -120,6 +126,7 @@ async def test_ai_draft_and_failure_fallback(monkeypatch, override_get_db) -> No
     monkeypatch.setattr("app.services.content_creation.creator.ContentCreator.create", fake_create)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "draft-ai")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
         created = await client.post(
@@ -138,6 +145,7 @@ async def test_ai_draft_and_failure_fallback(monkeypatch, override_get_db) -> No
         "app.services.content_creation.creator.ContentCreator.create", failing_create
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         fallback = await client.post(
             f"/api/v1/profiles/{profile_id}/briefs/{brief_id}/drafts",
             params={"workspace_id": workspace_id},
@@ -149,12 +157,11 @@ async def test_ai_draft_and_failure_fallback(monkeypatch, override_get_db) -> No
         assert "provider failure" not in fallback.text
 
 
-async def test_draft_profile_and_workspace_isolation(override_get_db) -> None:
+async def test_draft_profile_and_workspace_isolation(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_a = await create_workspace(client, "draft-a")
-        workspace_b = await create_workspace(client, "draft-b")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_a))
         profile_a = await create_profile(client, workspace_a, "A")
-        profile_b = await create_profile(client, workspace_b, "B")
         brief_id = await create_ready_brief(client, workspace_a, profile_a)
         created = await client.post(
             f"/api/v1/profiles/{profile_a}/briefs/{brief_id}/drafts",
@@ -163,6 +170,10 @@ async def test_draft_profile_and_workspace_isolation(override_get_db) -> None:
         )
         assert created.status_code == 201, created.text
         draft_id = created.json()["id"]
+
+        workspace_b = await create_workspace(client, "draft-b")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_b))
+        profile_b = await create_profile(client, workspace_b, "B")
         cross_workspace = await client.get(
             f"/api/v1/profiles/{profile_a}/drafts/{draft_id}",
             params={"workspace_id": workspace_b},

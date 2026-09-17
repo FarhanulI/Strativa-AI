@@ -4,7 +4,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_workspace_access
 from app.core.database import get_db_session
+from app.models.workspace_member import WorkspaceMember
 from app.schemas.market_signal import (
     MarketSignalCreate,
     MarketSignalResponse,
@@ -28,13 +30,13 @@ async def get_market_signal_service(
 async def create_market_signal(
     market_id: UUID,
     payload: MarketSignalCreate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[MarketSignalService, Depends(get_market_signal_service)],
 ) -> MarketSignalResponse:
     try:
         signal = await service.create(
             market_intelligence_id=market_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             title=payload.title,
             description=payload.description,
             topic_id=payload.topic_id,
@@ -66,7 +68,7 @@ async def create_market_signal(
 @router.get("", response_model=list[MarketSignalResponse])
 async def list_market_signals(
     market_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[MarketSignalService, Depends(get_market_signal_service)],
     status_filter: Annotated[str | None, Query(alias="status")] = None,
     signal_type: Annotated[str | None, Query()] = None,
@@ -77,7 +79,7 @@ async def list_market_signals(
     try:
         signals = await service.list(
             market_intelligence_id=market_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             status=status_filter,
             signal_type=signal_type,
             topic_id=topic_id,
@@ -96,14 +98,14 @@ async def list_market_signals(
 async def get_market_signal(
     market_id: UUID,
     signal_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[MarketSignalService, Depends(get_market_signal_service)],
 ) -> MarketSignalResponse:
     try:
         signal = await service.get(
             market_intelligence_id=market_id,
             signal_id=signal_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
         )
         if not signal:
             raise HTTPException(
@@ -123,14 +125,14 @@ async def update_market_signal(
     market_id: UUID,
     signal_id: UUID,
     payload: MarketSignalUpdate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[MarketSignalService, Depends(get_market_signal_service)],
 ) -> MarketSignalResponse:
     try:
         signal = await service.update(
             market_intelligence_id=market_id,
             signal_id=signal_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             title=payload.title,
             description=payload.description,
             topic_id=payload.topic_id,
@@ -168,14 +170,14 @@ async def update_market_signal(
 async def delete_market_signal(
     market_id: UUID,
     signal_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[MarketSignalService, Depends(get_market_signal_service)],
 ) -> None:
     try:
         success = await service.delete(
             market_intelligence_id=market_id,
             signal_id=signal_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
         )
         if not success:
             raise HTTPException(

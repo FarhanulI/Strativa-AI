@@ -4,7 +4,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_profile_access
 from app.core.database import get_db_session
+from app.models.content_profile import ContentProfile
 from app.schemas.content_performance import (
     ContentPerformanceCreate,
     ContentPerformanceResponse,
@@ -33,21 +35,19 @@ async def get_service(
 
 @router.post("/performance", response_model=ContentPerformanceResponse, status_code=201)
 async def create(
-    profile_id: UUID,
     payload: ContentPerformanceCreate,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentPerformanceService, Depends(get_service)],
 ):
     try:
-        return await service.create(profile_id, workspace_id, **payload.model_dump())
+        return await service.create(profile.id, profile.workspace_id, **payload.model_dump())
     except ValueError as error:
         raise not_found(error) from error
 
 
 @router.get("/performance", response_model=list[ContentPerformanceResponse])
 async def list_performance(
-    profile_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentPerformanceService, Depends(get_service)],
     platform: str | None = None,
     format: str | None = None,
@@ -57,8 +57,8 @@ async def list_performance(
 ):
     try:
         return await service.list(
-            profile_id,
-            workspace_id,
+            profile.id,
+            profile.workspace_id,
             platform=platform,
             format=format,
             topic=topic,
@@ -71,13 +71,12 @@ async def list_performance(
 
 @router.get("/performance/{performance_id}", response_model=ContentPerformanceResponse)
 async def get(
-    profile_id: UUID,
     performance_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentPerformanceService, Depends(get_service)],
 ):
     try:
-        result = await service.get(profile_id, workspace_id, performance_id)
+        result = await service.get(profile.id, profile.workspace_id, performance_id)
     except ValueError as error:
         raise not_found(error) from error
     if not result:
@@ -87,15 +86,17 @@ async def get(
 
 @router.patch("/performance/{performance_id}", response_model=ContentPerformanceResponse)
 async def update(
-    profile_id: UUID,
     performance_id: UUID,
     payload: ContentPerformanceUpdate,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentPerformanceService, Depends(get_service)],
 ):
     try:
         result = await service.update(
-            profile_id, workspace_id, performance_id, **payload.model_dump(exclude_unset=True)
+            profile.id,
+            profile.workspace_id,
+            performance_id,
+            **payload.model_dump(exclude_unset=True),
         )
     except ValueError as error:
         raise not_found(error) from error
@@ -106,13 +107,12 @@ async def update(
 
 @router.delete("/performance/{performance_id}", status_code=204)
 async def delete(
-    profile_id: UUID,
     performance_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentPerformanceService, Depends(get_service)],
 ):
     try:
-        result = await service.delete(profile_id, workspace_id, performance_id)
+        result = await service.delete(profile.id, profile.workspace_id, performance_id)
     except ValueError as error:
         raise not_found(error) from error
     if not result:
@@ -121,13 +121,12 @@ async def delete(
 
 @router.post("/performance/{performance_id}/analyze", response_model=PerformanceAnalysisResponse)
 async def analyze(
-    profile_id: UUID,
     performance_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentPerformanceService, Depends(get_service)],
 ):
     try:
-        return await service.analyze(profile_id, workspace_id, performance_id)
+        return await service.analyze(profile.id, profile.workspace_id, performance_id)
     except ValueError as error:
         raise not_found(error) from error
 
@@ -138,13 +137,14 @@ def insight_service(session: AsyncSession) -> PerformanceInsightService:
 
 @router.post("/performance/{performance_id}/insights", response_model=PerformanceInsightResponse)
 async def create_insight(
-    profile_id: UUID,
     performance_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ):
     try:
-        return await insight_service(session).create(profile_id, workspace_id, performance_id)
+        return await insight_service(session).create(
+            profile.id, profile.workspace_id, performance_id
+        )
     except ValueError as error:
         raise not_found(error) from error
     except AIError as error:
@@ -155,14 +155,13 @@ async def create_insight(
     "/performance/{performance_id}/insights", response_model=list[PerformanceInsightResponse]
 )
 async def record_insights(
-    profile_id: UUID,
     performance_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ):
     try:
         return await insight_service(session).list_for_record(
-            profile_id, workspace_id, performance_id
+            profile.id, profile.workspace_id, performance_id
         )
     except ValueError as error:
         raise not_found(error) from error
@@ -170,8 +169,7 @@ async def record_insights(
 
 @router.get("/performance-insights", response_model=list[PerformanceInsightResponse])
 async def profile_insights(
-    profile_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     insight_type: str | None = None,
     status_filter: Annotated[str | None, Query(alias="status")] = None,
@@ -179,8 +177,8 @@ async def profile_insights(
 ):
     try:
         return await insight_service(session).list_for_profile(
-            profile_id,
-            workspace_id,
+            profile.id,
+            profile.workspace_id,
             insight_type=insight_type,
             status=status_filter,
             minimum_confidence=minimum_confidence,

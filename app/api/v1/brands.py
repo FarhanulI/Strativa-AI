@@ -1,10 +1,11 @@
 from typing import Annotated
-from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_profile_access
 from app.core.database import get_db_session
+from app.models.content_profile import ContentProfile
 from app.schemas.brand import BrandCreate, BrandResponse, BrandUpdate
 from app.services.brand import BrandService
 
@@ -23,9 +24,8 @@ async def get_brand_service(
     status_code=status.HTTP_201_CREATED,
 )
 async def create_brand(
-    profile_id: UUID,
     payload: BrandCreate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[BrandService, Depends(get_brand_service)],
 ) -> BrandResponse:
     """
@@ -36,8 +36,8 @@ async def create_brand(
     """
     try:
         brand = await service.create(
-            profile_id=profile_id,
-            workspace_id=workspace_id,
+            profile_id=profile.id,
+            workspace_id=profile.workspace_id,
             positioning=payload.positioning,
             mission=payload.mission,
             vision=payload.vision,
@@ -64,14 +64,13 @@ async def create_brand(
 
 @router.get("/{profile_id}/brand", response_model=BrandResponse)
 async def get_brand(
-    profile_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[BrandService, Depends(get_brand_service)],
 ) -> BrandResponse:
     """
     Get the brand profile for a content profile within a workspace.
     """
-    brand = await service.get(profile_id, workspace_id)
+    brand = await service.get(profile.id, profile.workspace_id)
     if not brand:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -82,17 +81,16 @@ async def get_brand(
 
 @router.patch("/{profile_id}/brand", response_model=BrandResponse)
 async def update_brand(
-    profile_id: UUID,
     payload: BrandUpdate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[BrandService, Depends(get_brand_service)],
 ) -> BrandResponse:
     """
     Update a brand profile for a content profile within a workspace.
     """
     brand = await service.update(
-        profile_id=profile_id,
-        workspace_id=workspace_id,
+        profile_id=profile.id,
+        workspace_id=profile.workspace_id,
         positioning=payload.positioning,
         mission=payload.mission,
         vision=payload.vision,
@@ -114,14 +112,13 @@ async def update_brand(
 
 @router.delete("/{profile_id}/brand", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_brand(
-    profile_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[BrandService, Depends(get_brand_service)],
 ) -> None:
     """
     Delete the brand profile for a content profile within a workspace.
     """
-    success = await service.delete(profile_id, workspace_id)
+    success = await service.delete(profile.id, profile.workspace_id)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

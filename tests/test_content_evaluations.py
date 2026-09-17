@@ -12,18 +12,19 @@ Covers:
 - Historical evaluation trails
 """
 
+import uuid
+
 import pytest
 from httpx import ASGITransport, AsyncClient
-from uuid import UUID
 
 from app.main import app
 from app.models.content_evaluation import EvaluationClassification
-from app.services.ai.router import AIResult
-from app.services.ai.schemas.responses import AIResponseMetadata
+from app.schemas.content_evaluation import (
+    EvaluationFindingResult,
+)
 from app.services.evaluation.scoring import calculate_overall_score, classify_score
-from app.schemas.content_evaluation import ContentEvaluationLLMResult, EvaluationFindingResult, ScoreResult
+from tests.conftest import authenticate_as_workspace_owner
 from tests.test_content_briefs import create_opportunity, create_profile, create_workspace
-
 
 # === Test Fixtures and Helpers ===
 
@@ -212,10 +213,11 @@ def test_classification_boundary_conditions():
 # === Deterministic Evaluation Tests ===
 
 
-async def test_deterministic_evaluation_endpoint(override_get_db):
+async def test_deterministic_evaluation_endpoint(override_get_db, db_session):
     """Test evaluation with use_ai=false uses deterministic path."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "eval-deterministic")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
         draft_id = await create_ready_draft(client, workspace_id, profile_id, brief_id)
@@ -258,10 +260,11 @@ async def test_deterministic_evaluation_endpoint(override_get_db):
 # === API Endpoint Tests ===
 
 
-async def test_create_evaluation_success(override_get_db):
+async def test_create_evaluation_success(override_get_db, db_session):
     """Test successful evaluation creation."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "eval-create")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
         draft_id = await create_ready_draft(client, workspace_id, profile_id, brief_id)
@@ -279,10 +282,11 @@ async def test_create_evaluation_success(override_get_db):
         assert data["variation_id"] is None
 
 
-async def test_create_evaluation_missing_draft(override_get_db):
+async def test_create_evaluation_missing_draft(override_get_db, db_session):
     """Test evaluation creation fails for missing draft."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "eval-missing-draft")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
 
         fake_draft_id = "00000000-0000-0000-0000-000000000000"
@@ -294,10 +298,11 @@ async def test_create_evaluation_missing_draft(override_get_db):
         assert response.status_code == 404
 
 
-async def test_list_evaluations(override_get_db):
+async def test_list_evaluations(override_get_db, db_session):
     """Test listing evaluations for a draft."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "eval-list")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
         draft_id = await create_ready_draft(client, workspace_id, profile_id, brief_id)
@@ -331,10 +336,11 @@ async def test_list_evaluations(override_get_db):
         assert data["evaluations"][0]["created_at"] > data["evaluations"][1]["created_at"]
 
 
-async def test_get_evaluation(override_get_db):
+async def test_get_evaluation(override_get_db, db_session):
     """Test retrieving a single evaluation."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "eval-get")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
         draft_id = await create_ready_draft(client, workspace_id, profile_id, brief_id)
@@ -362,10 +368,11 @@ async def test_get_evaluation(override_get_db):
 # === Ownership & Isolation Tests ===
 
 
-async def test_cross_profile_evaluation_access_returns_404(override_get_db):
+async def test_cross_profile_evaluation_access_returns_404(override_get_db, db_session):
     """Test that Profile A cannot access Profile B's evaluations."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "eval-isolation")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_a = await create_profile(client, workspace_id, "Creator A")
         profile_b = await create_profile(client, workspace_id, "Creator B")
 
@@ -387,11 +394,11 @@ async def test_cross_profile_evaluation_access_returns_404(override_get_db):
         assert access_resp.status_code == 404
 
 
-async def test_cross_workspace_access_returns_404(override_get_db):
+async def test_cross_workspace_access_returns_404(override_get_db, db_session):
     """Test that different workspace cannot access evaluations."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_a = await create_workspace(client, "eval-ws-a")
-        workspace_b = await create_workspace(client, "eval-ws-b")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_a))
         profile_a = await create_profile(client, workspace_a, "Creator")
 
         # Create evaluation in workspace A
@@ -404,6 +411,9 @@ async def test_cross_workspace_access_returns_404(override_get_db):
         )
         evaluation_id = eval_resp.json()["id"]
 
+        workspace_b = await create_workspace(client, "eval-ws-b")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_b))
+
         # Attempt to access using workspace B (should fail)
         access_resp = await client.get(
             f"/api/v1/profiles/{profile_a}/drafts/{draft_a}/evaluations/{evaluation_id}",
@@ -415,10 +425,11 @@ async def test_cross_workspace_access_returns_404(override_get_db):
 # === Historical Trail Tests ===
 
 
-async def test_multiple_evaluations_create_separate_records(override_get_db):
+async def test_multiple_evaluations_create_separate_records(override_get_db, db_session):
     """Test that evaluating same draft twice creates separate evaluation records."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "eval-history")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
         draft_id = await create_ready_draft(client, workspace_id, profile_id, brief_id)
@@ -458,10 +469,11 @@ async def test_multiple_evaluations_create_separate_records(override_get_db):
 # === Creator Support Tests ===
 
 
-async def test_creator_profile_evaluation_works(override_get_db):
+async def test_creator_profile_evaluation_works(override_get_db, db_session):
     """Test that creators (without BusinessContext) can be evaluated."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "eval-creator")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
 
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
@@ -480,10 +492,11 @@ async def test_creator_profile_evaluation_works(override_get_db):
 # === Response Format Tests ===
 
 
-async def test_evaluation_response_contains_all_required_fields(override_get_db):
+async def test_evaluation_response_contains_all_required_fields(override_get_db, db_session):
     """Test that evaluation response has all required fields."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "eval-fields")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
         draft_id = await create_ready_draft(client, workspace_id, profile_id, brief_id)

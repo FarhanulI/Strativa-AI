@@ -1,6 +1,9 @@
+import uuid
+
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from tests.conftest import authenticate_as_workspace_owner
 
 
 async def _create_workspace(client: AsyncClient, slug: str) -> str:
@@ -27,9 +30,10 @@ async def _create_profile(
     return response.json()["id"]
 
 
-async def test_create_market_intelligence(override_get_db) -> None:
+async def test_create_market_intelligence(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "market-create")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Test Creator")
 
         response = await client.post(
@@ -48,9 +52,10 @@ async def test_create_market_intelligence(override_get_db) -> None:
     assert data["content_profile_id"] == profile_id
 
 
-async def test_get_market_intelligence(override_get_db) -> None:
+async def test_get_market_intelligence(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "market-get")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Test Creator")
 
         await client.post(
@@ -68,9 +73,10 @@ async def test_get_market_intelligence(override_get_db) -> None:
     assert response.json()["summary"] == "Summary"
 
 
-async def test_update_market_intelligence(override_get_db) -> None:
+async def test_update_market_intelligence(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "market-update")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Test Creator")
 
         await client.post(
@@ -89,9 +95,10 @@ async def test_update_market_intelligence(override_get_db) -> None:
     assert response.json()["summary"] == "Updated"
 
 
-async def test_delete_market_intelligence(override_get_db) -> None:
+async def test_delete_market_intelligence(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "market-delete")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Test Creator")
 
         await client.post(
@@ -107,9 +114,10 @@ async def test_delete_market_intelligence(override_get_db) -> None:
     assert response.status_code == 204
 
 
-async def test_duplicate_market_intelligence_returns_409(override_get_db) -> None:
+async def test_duplicate_market_intelligence_returns_409(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "market-dup")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Test Creator")
 
         await client.post(
@@ -127,9 +135,10 @@ async def test_duplicate_market_intelligence_returns_409(override_get_db) -> Non
     assert "already exists" in response.json()["detail"].lower()
 
 
-async def test_creator_can_create_market_intelligence(override_get_db) -> None:
+async def test_creator_can_create_market_intelligence(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "market-creator")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(
             client, workspace_id, "Football Creator", profile_type="creator"
         )
@@ -143,10 +152,13 @@ async def test_creator_can_create_market_intelligence(override_get_db) -> None:
     assert response.status_code == 201
 
 
-async def test_creator_market_intelligence_without_business_context(override_get_db) -> None:
+async def test_creator_market_intelligence_without_business_context(
+    override_get_db, db_session
+) -> None:
     """A creator profile must be able to have MarketIntelligence with no BusinessContext."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "market-no-business")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(
             client, workspace_id, "Football Creator", profile_type="creator"
         )
@@ -166,9 +178,10 @@ async def test_creator_market_intelligence_without_business_context(override_get
     assert business_response.status_code == 404
 
 
-async def test_business_can_create_market_intelligence(override_get_db) -> None:
+async def test_business_can_create_market_intelligence(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "market-business")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(
             client, workspace_id, "Sportswear Co", profile_type="business"
         )
@@ -185,9 +198,10 @@ async def test_business_can_create_market_intelligence(override_get_db) -> None:
     assert response.status_code == 201
 
 
-async def test_market_intelligence_cross_workspace_returns_404(override_get_db) -> None:
+async def test_market_intelligence_cross_workspace_returns_404(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace1_id = await _create_workspace(client, "market-xw-1")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace1_id))
         workspace2_id = await _create_workspace(client, "market-xw-2")
         profile_id = await _create_profile(client, workspace1_id, "Test Creator")
 
@@ -197,6 +211,7 @@ async def test_market_intelligence_cross_workspace_returns_404(override_get_db) 
             json={"summary": "Secret"},
         )
 
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace2_id))
         response = await client.get(
             f"/api/v1/profiles/{profile_id}/market-intelligence",
             params={"workspace_id": workspace2_id},
@@ -205,9 +220,12 @@ async def test_market_intelligence_cross_workspace_returns_404(override_get_db) 
     assert response.status_code == 404
 
 
-async def test_deleting_content_profile_cascades_market_intelligence(override_get_db) -> None:
+async def test_deleting_content_profile_cascades_market_intelligence(
+    override_get_db, db_session
+) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "market-cascade")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Test Creator")
 
         await client.post(

@@ -4,7 +4,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_profile_access
 from app.core.database import get_db_session
+from app.models.content_profile import ContentProfile
 from app.schemas.content_draft import ContentDraftCreate, ContentDraftResponse, ContentDraftUpdate
 from app.services.content_creation.service import ContentCreationService
 
@@ -27,14 +29,15 @@ def not_found(error: ValueError) -> HTTPException:
     status_code=status.HTTP_201_CREATED,
 )
 async def create_draft(
-    profile_id: UUID,
     brief_id: UUID,
     payload: ContentDraftCreate,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentCreationService, Depends(get_content_creation_service)],
 ) -> ContentDraftResponse:
     try:
-        draft = await service.create(profile_id, brief_id, workspace_id, **payload.model_dump())
+        draft = await service.create(
+            profile.id, brief_id, profile.workspace_id, **payload.model_dump()
+        )
     except ValueError as error:
         raise not_found(error) from error
     return ContentDraftResponse.model_validate(draft)
@@ -42,8 +45,7 @@ async def create_draft(
 
 @router.get("/profiles/{profile_id}/drafts", response_model=list[ContentDraftResponse])
 async def list_drafts(
-    profile_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentCreationService, Depends(get_content_creation_service)],
     status_filter: Annotated[str | None, Query(alias="status")] = None,
     platform: str | None = None,
@@ -53,8 +55,8 @@ async def list_drafts(
 ) -> list[ContentDraftResponse]:
     try:
         drafts = await service.list(
-            profile_id,
-            workspace_id,
+            profile.id,
+            profile.workspace_id,
             status=status_filter,
             platform=platform,
             format=format,
@@ -68,13 +70,12 @@ async def list_drafts(
 
 @router.get("/profiles/{profile_id}/drafts/{draft_id}", response_model=ContentDraftResponse)
 async def get_draft(
-    profile_id: UUID,
     draft_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentCreationService, Depends(get_content_creation_service)],
 ) -> ContentDraftResponse:
     try:
-        draft = await service.get(profile_id, draft_id, workspace_id)
+        draft = await service.get(profile.id, draft_id, profile.workspace_id)
     except ValueError as error:
         raise not_found(error) from error
     if not draft:
@@ -84,15 +85,14 @@ async def get_draft(
 
 @router.patch("/profiles/{profile_id}/drafts/{draft_id}", response_model=ContentDraftResponse)
 async def update_draft(
-    profile_id: UUID,
     draft_id: UUID,
     payload: ContentDraftUpdate,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentCreationService, Depends(get_content_creation_service)],
 ) -> ContentDraftResponse:
     try:
         draft = await service.update(
-            profile_id, draft_id, workspace_id, **payload.model_dump(exclude_unset=True)
+            profile.id, draft_id, profile.workspace_id, **payload.model_dump(exclude_unset=True)
         )
     except ValueError as error:
         raise not_found(error) from error
@@ -103,13 +103,12 @@ async def update_draft(
 
 @router.delete("/profiles/{profile_id}/drafts/{draft_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_draft(
-    profile_id: UUID,
     draft_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentCreationService, Depends(get_content_creation_service)],
 ) -> None:
     try:
-        deleted = await service.delete(profile_id, draft_id, workspace_id)
+        deleted = await service.delete(profile.id, draft_id, profile.workspace_id)
     except ValueError as error:
         raise not_found(error) from error
     if not deleted:

@@ -1,3 +1,4 @@
+import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -5,6 +6,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.ai.strategy.opportunity_scorer import OpportunityScorer
 from app.main import app
+from tests.conftest import authenticate_as_workspace_owner
 
 # Every opportunity creation fans out one opportunity_reasoning job (see
 # docs/development/day-18.md); tests/conftest.py's autouse
@@ -66,9 +68,10 @@ def test_scorer_boundaries_and_priority() -> None:
     assert scorer.calculate_timeliness(datetime.now(UTC) - timedelta(seconds=1)) == 0.0
 
 
-async def test_create_get_update_delete_creator_opportunity(override_get_db) -> None:
+async def test_create_get_update_delete_creator_opportunity(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "opportunity-crud")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         signal_id = await create_signal(client, workspace_id, profile_id)
         created = await client.post(
@@ -108,9 +111,12 @@ async def test_create_get_update_delete_creator_opportunity(override_get_db) -> 
         assert deleted.status_code == 204
 
 
-async def test_opportunity_filters_sort_and_cross_profile_signal_rejection(override_get_db) -> None:
+async def test_opportunity_filters_sort_and_cross_profile_signal_rejection(
+    override_get_db, db_session
+) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "opportunity-filter")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_a = await create_profile(client, workspace_id, "A", ["growth"])
         profile_b = await create_profile(client, workspace_id, "B")
         signal_b = await create_signal(client, workspace_id, profile_b)
@@ -155,6 +161,7 @@ async def test_opportunity_filters_sort_and_cross_profile_signal_rejection(overr
         assert listed.status_code == 200
         assert len(listed.json()) == 1
         other_workspace = await create_workspace(client, "opportunity-isolation")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(other_workspace))
         hidden = await client.get(
             f"/api/v1/profiles/{profile_a}/opportunities", params={"workspace_id": other_workspace}
         )

@@ -1,10 +1,12 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_workspace_access
 from app.core.database import get_db_session
+from app.models.workspace_member import WorkspaceMember
 from app.schemas.desire import DesireCreate, DesireResponse, DesireUpdate
 from app.services.desire import DesireService
 
@@ -24,13 +26,13 @@ async def get_desire_service(
 async def create_desire(
     audience_id: UUID,
     payload: DesireCreate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[DesireService, Depends(get_desire_service)],
 ) -> DesireResponse:
     try:
         desire = await service.create(
             audience_intelligence_id=audience_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             title=payload.title,
             description=payload.description,
             evidence=payload.evidence,
@@ -47,7 +49,7 @@ async def create_desire(
 @router.get("", response_model=list[DesireResponse])
 async def list_desires(
     audience_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[DesireService, Depends(get_desire_service)],
     skip: int = 0,
     limit: int = 100,
@@ -55,7 +57,7 @@ async def list_desires(
     try:
         desires = await service.list(
             audience_intelligence_id=audience_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             skip=skip,
             limit=limit,
         )
@@ -71,14 +73,14 @@ async def list_desires(
 async def get_desire(
     audience_id: UUID,
     desire_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[DesireService, Depends(get_desire_service)],
 ) -> DesireResponse:
     try:
         desire = await service.get(
             audience_intelligence_id=audience_id,
             desire_id=desire_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
         )
         if not desire:
             raise HTTPException(
@@ -98,14 +100,14 @@ async def update_desire(
     audience_id: UUID,
     desire_id: UUID,
     payload: DesireUpdate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[DesireService, Depends(get_desire_service)],
 ) -> DesireResponse:
     try:
         desire = await service.update(
             audience_intelligence_id=audience_id,
             desire_id=desire_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             title=payload.title,
             description=payload.description,
             evidence=payload.evidence,
@@ -128,14 +130,14 @@ async def update_desire(
 async def delete_desire(
     audience_id: UUID,
     desire_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[DesireService, Depends(get_desire_service)],
 ) -> None:
     try:
         success = await service.delete(
             audience_intelligence_id=audience_id,
             desire_id=desire_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
         )
         if not success:
             raise HTTPException(

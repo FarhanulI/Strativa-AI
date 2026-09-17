@@ -1,10 +1,12 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_workspace_access
 from app.core.database import get_db_session
+from app.models.workspace_member import WorkspaceMember
 from app.schemas.audience_question import (
     AudienceQuestionCreate,
     AudienceQuestionResponse,
@@ -28,13 +30,13 @@ async def get_audience_question_service(
 async def create_audience_question(
     audience_id: UUID,
     payload: AudienceQuestionCreate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[AudienceQuestionService, Depends(get_audience_question_service)],
 ) -> AudienceQuestionResponse:
     try:
         question = await service.create(
             audience_intelligence_id=audience_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             question=payload.question,
             context=payload.context,
             evidence=payload.evidence,
@@ -52,7 +54,7 @@ async def create_audience_question(
 @router.get("", response_model=list[AudienceQuestionResponse])
 async def list_audience_questions(
     audience_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[AudienceQuestionService, Depends(get_audience_question_service)],
     skip: int = 0,
     limit: int = 100,
@@ -60,7 +62,7 @@ async def list_audience_questions(
     try:
         questions = await service.list(
             audience_intelligence_id=audience_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             skip=skip,
             limit=limit,
         )
@@ -76,14 +78,14 @@ async def list_audience_questions(
 async def get_audience_question(
     audience_id: UUID,
     question_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[AudienceQuestionService, Depends(get_audience_question_service)],
 ) -> AudienceQuestionResponse:
     try:
         question = await service.get(
             audience_intelligence_id=audience_id,
             question_id=question_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
         )
         if not question:
             raise HTTPException(
@@ -103,14 +105,14 @@ async def update_audience_question(
     audience_id: UUID,
     question_id: UUID,
     payload: AudienceQuestionUpdate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[AudienceQuestionService, Depends(get_audience_question_service)],
 ) -> AudienceQuestionResponse:
     try:
         question = await service.update(
             audience_intelligence_id=audience_id,
             question_id=question_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             question=payload.question,
             context=payload.context,
             evidence=payload.evidence,
@@ -134,14 +136,14 @@ async def update_audience_question(
 async def delete_audience_question(
     audience_id: UUID,
     question_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[AudienceQuestionService, Depends(get_audience_question_service)],
 ) -> None:
     try:
         success = await service.delete(
             audience_intelligence_id=audience_id,
             question_id=question_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
         )
         if not success:
             raise HTTPException(

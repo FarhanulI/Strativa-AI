@@ -1,9 +1,11 @@
+import uuid
 from datetime import UTC, datetime
 
 from httpx import ASGITransport, AsyncClient
 
 from app.ai.strategy.opportunity_scorer import OpportunityScorer
 from app.main import app
+from tests.conftest import authenticate_as_workspace_owner
 
 
 async def create_workspace(client: AsyncClient, slug: str) -> str:
@@ -32,9 +34,10 @@ async def create_signal(client: AsyncClient, workspace_id: str, profile_id: str,
     return response.json()
 
 
-async def test_audience_signal_crud_and_filters(override_get_db) -> None:
+async def test_audience_signal_crud_and_filters(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "audience-signal-crud")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         first = await create_signal(
             client, workspace_id, profile_id, topic="photography", strength_score=0.3
@@ -70,12 +73,13 @@ async def test_audience_signal_crud_and_filters(override_get_db) -> None:
         assert deleted.status_code == 204
 
 
-async def test_audience_signal_validation_and_workspace_isolation(override_get_db) -> None:
+async def test_audience_signal_validation_and_workspace_isolation(
+    override_get_db, db_session
+) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_a = await create_workspace(client, "audience-signal-a")
-        workspace_b = await create_workspace(client, "audience-signal-b")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_a))
         profile_a = await create_profile(client, workspace_a, "A")
-        profile_b = await create_profile(client, workspace_b, "B")
         signal = await create_signal(client, workspace_a, profile_a)
         invalid_score = await client.post(
             f"/api/v1/profiles/{profile_a}/audience-signals",
@@ -87,6 +91,10 @@ async def test_audience_signal_validation_and_workspace_isolation(override_get_d
             params={"workspace_id": workspace_a},
             json={"question": "Bad", "intent": "unknown"},
         )
+
+        workspace_b = await create_workspace(client, "audience-signal-b")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_b))
+        profile_b = await create_profile(client, workspace_b, "B")
         hidden = await client.get(
             f"/api/v1/profiles/{profile_a}/audience-signals/{signal['id']}",
             params={"workspace_id": workspace_b},
@@ -125,9 +133,10 @@ def test_audience_signal_scorer_uses_strength_and_topic() -> None:
     assert result.total == 0.9
 
 
-async def test_audience_signal_creates_opportunity(override_get_db) -> None:
+async def test_audience_signal_creates_opportunity(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "audience-opportunity")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Photographer", ["photography"])
         signal = await create_signal(
             client, workspace_id, profile_id, topic="photography", strength_score=1.0

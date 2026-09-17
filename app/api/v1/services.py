@@ -1,10 +1,12 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_workspace_access
 from app.core.database import get_db_session
+from app.models.workspace_member import WorkspaceMember
 from app.schemas.service import ServiceCreate, ServiceResponse, ServiceUpdate
 from app.services.service import ServiceService
 
@@ -25,7 +27,7 @@ async def get_service_service(
 async def create_service(
     business_context_id: UUID,
     payload: ServiceCreate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[ServiceService, Depends(get_service_service)],
 ) -> ServiceResponse:
     """
@@ -34,7 +36,7 @@ async def create_service(
     try:
         result = await service.create(
             business_context_id=business_context_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             name=payload.name,
             description=payload.description,
             category=payload.category,
@@ -55,13 +57,13 @@ async def create_service(
 @router.get("/{business_context_id}/services", response_model=list[ServiceResponse])
 async def list_services(
     business_context_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[ServiceService, Depends(get_service_service)],
 ) -> list[ServiceResponse]:
     """
     List all services for a business context within a workspace.
     """
-    services = await service.list(business_context_id, workspace_id)
+    services = await service.list(business_context_id, workspace_member.workspace_id)
     return [ServiceResponse.model_validate(s) for s in services]
 
 
@@ -69,13 +71,13 @@ async def list_services(
 async def get_service(
     business_context_id: UUID,
     service_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[ServiceService, Depends(get_service_service)],
 ) -> ServiceResponse:
     """
     Get a service by ID within a workspace.
     """
-    result = await service.get(service_id, business_context_id, workspace_id)
+    result = await service.get(service_id, business_context_id, workspace_member.workspace_id)
     if not result:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -92,7 +94,7 @@ async def update_service(
     business_context_id: UUID,
     service_id: UUID,
     payload: ServiceUpdate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[ServiceService, Depends(get_service_service)],
 ) -> ServiceResponse:
     """
@@ -101,7 +103,7 @@ async def update_service(
     result = await service.update(
         service_id=service_id,
         business_context_id=business_context_id,
-        workspace_id=workspace_id,
+        workspace_id=workspace_member.workspace_id,
         name=payload.name,
         description=payload.description,
         category=payload.category,
@@ -126,13 +128,13 @@ async def update_service(
 async def delete_service(
     business_context_id: UUID,
     service_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[ServiceService, Depends(get_service_service)],
 ) -> None:
     """
     Delete a service within a workspace.
     """
-    deleted = await service.delete(service_id, business_context_id, workspace_id)
+    deleted = await service.delete(service_id, business_context_id, workspace_member.workspace_id)
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

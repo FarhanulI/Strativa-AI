@@ -4,7 +4,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_profile_access
 from app.core.database import get_db_session
+from app.models.content_profile import ContentProfile
 from app.schemas.content_draft import ContentDraftResponse
 from app.schemas.content_library import ContentBriefLineageSummary, ContentOpportunityLineageSummary
 from app.schemas.published_content import (
@@ -43,15 +45,14 @@ def error_response(error: ValueError) -> HTTPException:
     status_code=status.HTTP_201_CREATED,
 )
 async def publish_draft(
-    profile_id: UUID,
     draft_id: UUID,
     payload: PublishedContentCreate,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[PublishedContentService, Depends(get_published_content_service)],
 ) -> PublishedContentResponse:
     try:
         published = await service.publish_draft(
-            workspace_id, profile_id, draft_id, external_url=payload.external_url
+            profile.workspace_id, profile.id, draft_id, external_url=payload.external_url
         )
     except ValueError as error:
         raise error_response(error) from error
@@ -64,16 +65,15 @@ async def publish_draft(
     status_code=status.HTTP_201_CREATED,
 )
 async def schedule_draft(
-    profile_id: UUID,
     draft_id: UUID,
     payload: PublishedContentScheduleCreate,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[PublishedContentService, Depends(get_published_content_service)],
 ) -> PublishedContentResponse:
     try:
         scheduled = await service.schedule_draft(
-            workspace_id,
-            profile_id,
+            profile.workspace_id,
+            profile.id,
             draft_id,
             scheduled_at=payload.scheduled_at,
             external_url=payload.external_url,
@@ -88,13 +88,12 @@ async def schedule_draft(
     response_model=PublishedContentResponse,
 )
 async def cancel_scheduled_publish(
-    profile_id: UUID,
     published_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[PublishedContentService, Depends(get_published_content_service)],
 ) -> PublishedContentResponse:
     try:
-        cancelled = await service.cancel_schedule(workspace_id, profile_id, published_id)
+        cancelled = await service.cancel_schedule(profile.workspace_id, profile.id, published_id)
     except ValueError as error:
         raise error_response(error) from error
     return PublishedContentResponse.model_validate(cancelled)
@@ -105,8 +104,7 @@ async def cancel_scheduled_publish(
     response_model=list[PublishedContentResponse],
 )
 async def list_published_content(
-    profile_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[PublishedContentService, Depends(get_published_content_service)],
     platform: str | None = None,
     status_filter: Annotated[str | None, Query(alias="status")] = None,
@@ -115,8 +113,8 @@ async def list_published_content(
 ) -> list[PublishedContentResponse]:
     try:
         items = await service.list_published(
-            workspace_id,
-            profile_id,
+            profile.workspace_id,
+            profile.id,
             platform=platform,
             status=status_filter,
             skip=skip,
@@ -132,17 +130,16 @@ async def list_published_content(
     response_model=PublishedContentLineageResponse,
 )
 async def get_published_content(
-    profile_id: UUID,
     published_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[PublishedContentService, Depends(get_published_content_service)],
 ) -> PublishedContentLineageResponse:
     try:
-        published = await service.get_published_item(workspace_id, published_id)
+        published = await service.get_published_item(profile.workspace_id, published_id)
     except ValueError as error:
         raise error_response(error) from error
 
-    if published.profile_id != profile_id:
+    if published.profile_id != profile.id:
         raise HTTPException(status_code=404, detail="Published content not found")
 
     draft = published.draft

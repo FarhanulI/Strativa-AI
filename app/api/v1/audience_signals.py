@@ -4,7 +4,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_profile_access
 from app.core.database import get_db_session
+from app.models.content_profile import ContentProfile
 from app.schemas.audience_signal import (
     AudienceSignalCreate,
     AudienceSignalResponse,
@@ -23,13 +25,12 @@ async def get_audience_signal_service(
 
 @router.post("", response_model=AudienceSignalResponse, status_code=status.HTTP_201_CREATED)
 async def create_audience_signal(
-    profile_id: UUID,
     payload: AudienceSignalCreate,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[AudienceSignalService, Depends(get_audience_signal_service)],
 ) -> AudienceSignalResponse:
     try:
-        signal = await service.create(profile_id, workspace_id, **payload.model_dump())
+        signal = await service.create(profile.id, profile.workspace_id, **payload.model_dump())
     except ValueError as error:
         raise HTTPException(status_code=404, detail="Content profile not found") from error
     return AudienceSignalResponse.model_validate(signal)
@@ -37,8 +38,7 @@ async def create_audience_signal(
 
 @router.get("", response_model=list[AudienceSignalResponse])
 async def list_audience_signals(
-    profile_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[AudienceSignalService, Depends(get_audience_signal_service)],
     signal_type: str | None = None,
     intent: str | None = None,
@@ -51,8 +51,8 @@ async def list_audience_signals(
 ) -> list[AudienceSignalResponse]:
     try:
         signals = await service.list(
-            profile_id,
-            workspace_id,
+            profile.id,
+            profile.workspace_id,
             signal_type=signal_type,
             intent=intent,
             status=status_filter,
@@ -69,13 +69,12 @@ async def list_audience_signals(
 
 @router.get("/{signal_id}", response_model=AudienceSignalResponse)
 async def get_audience_signal(
-    profile_id: UUID,
     signal_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[AudienceSignalService, Depends(get_audience_signal_service)],
 ) -> AudienceSignalResponse:
     try:
-        signal = await service.get(profile_id, signal_id, workspace_id)
+        signal = await service.get(profile.id, signal_id, profile.workspace_id)
     except ValueError as error:
         raise HTTPException(status_code=404, detail="Audience signal not found") from error
     if not signal:
@@ -85,15 +84,14 @@ async def get_audience_signal(
 
 @router.patch("/{signal_id}", response_model=AudienceSignalResponse)
 async def update_audience_signal(
-    profile_id: UUID,
     signal_id: UUID,
     payload: AudienceSignalUpdate,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[AudienceSignalService, Depends(get_audience_signal_service)],
 ) -> AudienceSignalResponse:
     try:
         signal = await service.update(
-            profile_id, signal_id, workspace_id, **payload.model_dump(exclude_unset=True)
+            profile.id, signal_id, profile.workspace_id, **payload.model_dump(exclude_unset=True)
         )
     except ValueError as error:
         raise HTTPException(status_code=404, detail="Audience signal not found") from error
@@ -104,13 +102,12 @@ async def update_audience_signal(
 
 @router.delete("/{signal_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_audience_signal(
-    profile_id: UUID,
     signal_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[AudienceSignalService, Depends(get_audience_signal_service)],
 ) -> None:
     try:
-        deleted = await service.delete(profile_id, signal_id, workspace_id)
+        deleted = await service.delete(profile.id, signal_id, profile.workspace_id)
     except ValueError as error:
         raise HTTPException(status_code=404, detail="Audience signal not found") from error
     if not deleted:

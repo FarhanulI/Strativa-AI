@@ -1,10 +1,11 @@
 from typing import Annotated
-from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_profile_access
 from app.core.database import get_db_session
+from app.models.content_profile import ContentProfile
 from app.schemas.audience_intelligence import (
     AudienceIntelligenceCreate,
     AudienceIntelligenceResponse,
@@ -26,15 +27,14 @@ async def get_audience_intelligence_service(
 
 @router.post("", response_model=AudienceIntelligenceResponse, status_code=status.HTTP_201_CREATED)
 async def create_audience_intelligence(
-    profile_id: UUID,
     payload: AudienceIntelligenceCreate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[AudienceIntelligenceService, Depends(get_audience_intelligence_service)],
 ) -> AudienceIntelligenceResponse:
     try:
         audience_intelligence = await service.create(
-            profile_id=profile_id,
-            workspace_id=workspace_id,
+            profile_id=profile.id,
+            workspace_id=profile.workspace_id,
             summary=payload.summary,
             language=payload.language,
             geography=payload.geography,
@@ -58,11 +58,12 @@ async def create_audience_intelligence(
 
 @router.get("", response_model=AudienceIntelligenceResponse)
 async def get_audience_intelligence(
-    profile_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[AudienceIntelligenceService, Depends(get_audience_intelligence_service)],
 ) -> AudienceIntelligenceResponse:
-    audience_intelligence = await service.get(profile_id=profile_id, workspace_id=workspace_id)
+    audience_intelligence = await service.get(
+        profile_id=profile.id, workspace_id=profile.workspace_id
+    )
     if not audience_intelligence:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -73,14 +74,13 @@ async def get_audience_intelligence(
 
 @router.patch("", response_model=AudienceIntelligenceResponse)
 async def update_audience_intelligence(
-    profile_id: UUID,
     payload: AudienceIntelligenceUpdate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[AudienceIntelligenceService, Depends(get_audience_intelligence_service)],
 ) -> AudienceIntelligenceResponse:
     audience_intelligence = await service.update(
-        profile_id=profile_id,
-        workspace_id=workspace_id,
+        profile_id=profile.id,
+        workspace_id=profile.workspace_id,
         summary=payload.summary,
         language=payload.language,
         geography=payload.geography,
@@ -99,11 +99,10 @@ async def update_audience_intelligence(
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_audience_intelligence(
-    profile_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[AudienceIntelligenceService, Depends(get_audience_intelligence_service)],
 ) -> None:
-    success = await service.delete(profile_id=profile_id, workspace_id=workspace_id)
+    success = await service.delete(profile_id=profile.id, workspace_id=profile.workspace_id)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

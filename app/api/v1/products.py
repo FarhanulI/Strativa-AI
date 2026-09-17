@@ -1,10 +1,12 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_workspace_access
 from app.core.database import get_db_session
+from app.models.workspace_member import WorkspaceMember
 from app.schemas.product import ProductCreate, ProductResponse, ProductUpdate
 from app.services.product import ProductService
 
@@ -25,7 +27,7 @@ async def get_product_service(
 async def create_product(
     business_context_id: UUID,
     payload: ProductCreate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[ProductService, Depends(get_product_service)],
 ) -> ProductResponse:
     """
@@ -34,7 +36,7 @@ async def create_product(
     try:
         product = await service.create(
             business_context_id=business_context_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             name=payload.name,
             description=payload.description,
             category=payload.category,
@@ -55,13 +57,13 @@ async def create_product(
 @router.get("/{business_context_id}/products", response_model=list[ProductResponse])
 async def list_products(
     business_context_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[ProductService, Depends(get_product_service)],
 ) -> list[ProductResponse]:
     """
     List all products for a business context within a workspace.
     """
-    products = await service.list(business_context_id, workspace_id)
+    products = await service.list(business_context_id, workspace_member.workspace_id)
     return [ProductResponse.model_validate(p) for p in products]
 
 
@@ -69,13 +71,13 @@ async def list_products(
 async def get_product(
     business_context_id: UUID,
     product_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[ProductService, Depends(get_product_service)],
 ) -> ProductResponse:
     """
     Get a product by ID within a workspace.
     """
-    product = await service.get(product_id, business_context_id, workspace_id)
+    product = await service.get(product_id, business_context_id, workspace_member.workspace_id)
     if not product:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -92,7 +94,7 @@ async def update_product(
     business_context_id: UUID,
     product_id: UUID,
     payload: ProductUpdate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[ProductService, Depends(get_product_service)],
 ) -> ProductResponse:
     """
@@ -101,7 +103,7 @@ async def update_product(
     product = await service.update(
         product_id=product_id,
         business_context_id=business_context_id,
-        workspace_id=workspace_id,
+        workspace_id=workspace_member.workspace_id,
         name=payload.name,
         description=payload.description,
         category=payload.category,
@@ -126,13 +128,13 @@ async def update_product(
 async def delete_product(
     business_context_id: UUID,
     product_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[ProductService, Depends(get_product_service)],
 ) -> None:
     """
     Delete a product within a workspace.
     """
-    deleted = await service.delete(product_id, business_context_id, workspace_id)
+    deleted = await service.delete(product_id, business_context_id, workspace_member.workspace_id)
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

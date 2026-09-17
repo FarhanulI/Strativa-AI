@@ -4,7 +4,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_profile_access
 from app.core.database import get_db_session
+from app.models.content_profile import ContentProfile
 from app.schemas.content_brief import ContentBriefCreate, ContentBriefResponse, ContentBriefUpdate
 from app.services.content_brief import ContentBriefService
 
@@ -27,17 +29,16 @@ def not_found(error: ValueError) -> HTTPException:
     status_code=status.HTTP_201_CREATED,
 )
 async def create_brief(
-    profile_id: UUID,
     opportunity_id: UUID,
     payload: ContentBriefCreate,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentBriefService, Depends(get_content_brief_service)],
 ) -> ContentBriefResponse:
     if payload.opportunity_id != opportunity_id:
         raise HTTPException(status_code=404, detail="Content opportunity not found")
     try:
         values = payload.model_dump(exclude={"opportunity_id"})
-        brief = await service.create(profile_id, workspace_id, opportunity_id, **values)
+        brief = await service.create(profile.id, profile.workspace_id, opportunity_id, **values)
     except ValueError as error:
         raise not_found(error) from error
     return ContentBriefResponse.model_validate(brief)
@@ -48,16 +49,15 @@ async def create_brief(
     response_model=list[ContentBriefResponse],
 )
 async def list_opportunity_briefs(
-    profile_id: UUID,
     opportunity_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentBriefService, Depends(get_content_brief_service)],
     skip: int = 0,
     limit: int = 100,
 ) -> list[ContentBriefResponse]:
     try:
         briefs = await service.list_by_opportunity(
-            profile_id, opportunity_id, workspace_id, skip=skip, limit=limit
+            profile.id, opportunity_id, profile.workspace_id, skip=skip, limit=limit
         )
     except ValueError as error:
         raise not_found(error) from error
@@ -66,8 +66,7 @@ async def list_opportunity_briefs(
 
 @router.get("/profiles/{profile_id}/briefs", response_model=list[ContentBriefResponse])
 async def list_profile_briefs(
-    profile_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentBriefService, Depends(get_content_brief_service)],
     status_filter: Annotated[str | None, Query(alias="status")] = None,
     generation_source: str | None = None,
@@ -82,8 +81,8 @@ async def list_profile_briefs(
 ) -> list[ContentBriefResponse]:
     try:
         briefs = await service.list(
-            profile_id,
-            workspace_id,
+            profile.id,
+            profile.workspace_id,
             status=status_filter,
             generation_source=generation_source,
             target_objective=target_objective,
@@ -102,13 +101,12 @@ async def list_profile_briefs(
 
 @router.get("/profiles/{profile_id}/briefs/{brief_id}", response_model=ContentBriefResponse)
 async def get_brief(
-    profile_id: UUID,
     brief_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentBriefService, Depends(get_content_brief_service)],
 ) -> ContentBriefResponse:
     try:
-        brief = await service.get(profile_id, brief_id, workspace_id)
+        brief = await service.get(profile.id, brief_id, profile.workspace_id)
     except ValueError as error:
         raise not_found(error) from error
     if not brief:
@@ -118,15 +116,14 @@ async def get_brief(
 
 @router.patch("/profiles/{profile_id}/briefs/{brief_id}", response_model=ContentBriefResponse)
 async def update_brief(
-    profile_id: UUID,
     brief_id: UUID,
     payload: ContentBriefUpdate,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentBriefService, Depends(get_content_brief_service)],
 ) -> ContentBriefResponse:
     try:
         brief = await service.update(
-            profile_id, brief_id, workspace_id, **payload.model_dump(exclude_unset=True)
+            profile.id, brief_id, profile.workspace_id, **payload.model_dump(exclude_unset=True)
         )
     except ValueError as error:
         raise not_found(error) from error
@@ -137,13 +134,12 @@ async def update_brief(
 
 @router.delete("/profiles/{profile_id}/briefs/{brief_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_brief(
-    profile_id: UUID,
     brief_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentBriefService, Depends(get_content_brief_service)],
 ) -> None:
     try:
-        deleted = await service.delete(profile_id, brief_id, workspace_id)
+        deleted = await service.delete(profile.id, brief_id, profile.workspace_id)
     except ValueError as error:
         raise not_found(error) from error
     if not deleted:

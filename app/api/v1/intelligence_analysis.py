@@ -3,16 +3,18 @@ from typing import Annotated
 from uuid import UUID
 
 from arq.connections import ArqRedis
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_profile_access
 from app.core.config import settings
 from app.core.database import get_db_session
 from app.infrastructure.jobs.pool import get_arq_pool
 from app.infrastructure.redis_client import get_redis
 from app.models.ai_job import AIJob
+from app.models.content_profile import ContentProfile
 from app.schemas.intelligence_analysis import (
     IntelligenceAnalysisPendingResponse,
     IntelligenceAnalysisResponse,
@@ -90,29 +92,26 @@ async def _get_analysis(
 
 @router.get("/brand-analysis")
 async def get_brand_analysis(
-    profile_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     arq_pool: Annotated[ArqRedis, Depends(get_arq_pool)],
 ):
-    return await _get_analysis(profile_id, "brand", workspace_id, session, arq_pool)
+    return await _get_analysis(profile.id, "brand", profile.workspace_id, session, arq_pool)
 
 
 @router.get("/audience-analysis")
 async def get_audience_analysis(
-    profile_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     arq_pool: Annotated[ArqRedis, Depends(get_arq_pool)],
 ):
-    return await _get_analysis(profile_id, "audience", workspace_id, session, arq_pool)
+    return await _get_analysis(profile.id, "audience", profile.workspace_id, session, arq_pool)
 
 
 @router.get("/market-analysis")
 async def get_market_analysis(
-    profile_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     arq_pool: Annotated[ArqRedis, Depends(get_arq_pool)],
 ):
-    return await _get_analysis(profile_id, "market", workspace_id, session, arq_pool)
+    return await _get_analysis(profile.id, "market", profile.workspace_id, session, arq_pool)

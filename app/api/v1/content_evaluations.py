@@ -10,7 +10,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_profile_access
 from app.core.database import get_db_session
+from app.models.content_profile import ContentProfile
 from app.repositories.content_brief import ContentBriefRepository
 from app.repositories.content_draft import ContentDraftRepository
 from app.repositories.content_draft_variation import ContentDraftVariationRepository
@@ -58,19 +60,15 @@ def not_found(error: ValueError) -> HTTPException:
     status_code=status.HTTP_201_CREATED,
 )
 async def evaluate_draft(
-    profile_id: UUID,
     draft_id: UUID,
     payload: ContentEvaluationCreateRequest,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentEvaluationService, Depends(get_evaluation_service)],
 ) -> ContentEvaluationResponse:
     """
     Evaluate a content draft against its strategic brief.
 
     Supports both deterministic and AI-powered evaluation with automatic fallback.
-
-    **Query Parameters:**
-    - workspace_id: UUID - Required workspace identifier
 
     **Request Body:**
     - use_ai: bool - Whether to attempt AI enrichment (defaults to true)
@@ -82,8 +80,8 @@ async def evaluate_draft(
     """
     try:
         evaluation = await service.evaluate_draft(
-            profile_id,
-            workspace_id,
+            profile.id,
+            profile.workspace_id,
             draft_id,
             variation_id=payload.variation_id,
             use_ai=payload.use_ai,
@@ -98,9 +96,8 @@ async def evaluate_draft(
     response_model=ContentEvaluationListResponse,
 )
 async def list_draft_evaluations(
-    profile_id: UUID,
     draft_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     sort_by: str = Query("created_at", description="Field to sort by"),
     sort: str = Query("desc", description="Sort direction (asc/desc)"),
@@ -113,7 +110,6 @@ async def list_draft_evaluations(
     Returns evaluations in reverse chronological order (newest first).
 
     **Query Parameters:**
-    - workspace_id: UUID - Required workspace identifier
     - sort_by: str - Field to sort by (default: created_at)
     - sort: str - Sort direction (asc/desc, default: desc)
     - skip: int - Number of results to skip (default: 0)
@@ -121,27 +117,20 @@ async def list_draft_evaluations(
 
     **Returns:**
     - 200: ContentEvaluationListResponse with paginated results
-    - 404: If profile or draft not found or ownership mismatch
+    - 404: If draft not found
     """
-    # Verify ownership of profile and draft
-    profile_repo = ContentProfileRepository(session)
     draft_repo = ContentDraftRepository(session)
 
     try:
-        profile = await profile_repo.get_by_id(profile_id, workspace_id)
-        if not profile:
-            raise ValueError("Content profile not found")
-
-        draft = await draft_repo.get_by_id(profile_id, draft_id)
+        draft = await draft_repo.get_by_id(profile.id, draft_id)
         if not draft:
             raise ValueError("Content draft not found")
     except ValueError as error:
         raise not_found(error) from error
 
-    # List evaluations
     evaluation_repo = ContentEvaluationRepository(session)
     evaluations, total = await evaluation_repo.list_evaluations_for_draft(
-        profile_id, draft_id, sort_by=sort_by, sort_order=sort, skip=skip, limit=limit
+        profile.id, draft_id, sort_by=sort_by, sort_order=sort, skip=skip, limit=limit
     )
 
     return ContentEvaluationListResponse(
@@ -157,37 +146,27 @@ async def list_draft_evaluations(
     response_model=ContentEvaluationResponse,
 )
 async def get_draft_evaluation(
-    profile_id: UUID,
     draft_id: UUID,
     evaluation_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> ContentEvaluationResponse:
     """
     Get a specific evaluation by ID.
 
-    **Query Parameters:**
-    - workspace_id: UUID - Required workspace identifier
-
     **Returns:**
     - 200: ContentEvaluationResponse with full evaluation details
-    - 404: If profile, draft, or evaluation not found or ownership mismatch
+    - 404: If draft or evaluation not found or ownership mismatch
     """
-    # Verify ownership of profile and draft
-    profile_repo = ContentProfileRepository(session)
     draft_repo = ContentDraftRepository(session)
     evaluation_repo = ContentEvaluationRepository(session)
 
     try:
-        profile = await profile_repo.get_by_id(profile_id, workspace_id)
-        if not profile:
-            raise ValueError("Content profile not found")
-
-        draft = await draft_repo.get_by_id(profile_id, draft_id)
+        draft = await draft_repo.get_by_id(profile.id, draft_id)
         if not draft:
             raise ValueError("Content draft not found")
 
-        evaluation = await evaluation_repo.get_evaluation(evaluation_id, profile_id)
+        evaluation = await evaluation_repo.get_evaluation(evaluation_id, profile.id)
         if not evaluation:
             raise ValueError("Content evaluation not found")
 

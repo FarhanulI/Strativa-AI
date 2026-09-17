@@ -1,10 +1,12 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_workspace_access
 from app.core.database import get_db_session
+from app.models.workspace_member import WorkspaceMember
 from app.schemas.pain_point import PainPointCreate, PainPointResponse, PainPointUpdate
 from app.services.pain_point import PainPointService
 
@@ -24,13 +26,13 @@ async def get_pain_point_service(
 async def create_pain_point(
     audience_id: UUID,
     payload: PainPointCreate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[PainPointService, Depends(get_pain_point_service)],
 ) -> PainPointResponse:
     try:
         pain_point = await service.create(
             audience_intelligence_id=audience_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             title=payload.title,
             description=payload.description,
             evidence=payload.evidence,
@@ -48,7 +50,7 @@ async def create_pain_point(
 @router.get("", response_model=list[PainPointResponse])
 async def list_pain_points(
     audience_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[PainPointService, Depends(get_pain_point_service)],
     skip: int = 0,
     limit: int = 100,
@@ -56,7 +58,7 @@ async def list_pain_points(
     try:
         pain_points = await service.list(
             audience_intelligence_id=audience_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             skip=skip,
             limit=limit,
         )
@@ -72,14 +74,14 @@ async def list_pain_points(
 async def get_pain_point(
     audience_id: UUID,
     pain_point_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[PainPointService, Depends(get_pain_point_service)],
 ) -> PainPointResponse:
     try:
         pain_point = await service.get(
             audience_intelligence_id=audience_id,
             pain_point_id=pain_point_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
         )
         if not pain_point:
             raise HTTPException(
@@ -99,14 +101,14 @@ async def update_pain_point(
     audience_id: UUID,
     pain_point_id: UUID,
     payload: PainPointUpdate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[PainPointService, Depends(get_pain_point_service)],
 ) -> PainPointResponse:
     try:
         pain_point = await service.update(
             audience_intelligence_id=audience_id,
             pain_point_id=pain_point_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             title=payload.title,
             description=payload.description,
             evidence=payload.evidence,
@@ -130,14 +132,14 @@ async def update_pain_point(
 async def delete_pain_point(
     audience_id: UUID,
     pain_point_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[PainPointService, Depends(get_pain_point_service)],
 ) -> None:
     try:
         success = await service.delete(
             audience_intelligence_id=audience_id,
             pain_point_id=pain_point_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
         )
         if not success:
             raise HTTPException(

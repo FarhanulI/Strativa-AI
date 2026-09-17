@@ -1,10 +1,12 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_workspace_access
 from app.core.database import get_db_session
+from app.models.workspace_member import WorkspaceMember
 from app.schemas.offer import OfferCreate, OfferResponse, OfferUpdate
 from app.services.offer import OfferService
 
@@ -25,7 +27,7 @@ async def get_offer_service(
 async def create_offer(
     business_context_id: UUID,
     payload: OfferCreate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[OfferService, Depends(get_offer_service)],
 ) -> OfferResponse:
     """
@@ -34,7 +36,7 @@ async def create_offer(
     try:
         offer = await service.create(
             business_context_id=business_context_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             name=payload.name,
             description=payload.description,
             offer_type=payload.offer_type,
@@ -62,13 +64,13 @@ async def create_offer(
 @router.get("/{business_context_id}/offers", response_model=list[OfferResponse])
 async def list_offers(
     business_context_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[OfferService, Depends(get_offer_service)],
 ) -> list[OfferResponse]:
     """
     List all offers for a business context within a workspace.
     """
-    offers = await service.list(business_context_id, workspace_id)
+    offers = await service.list(business_context_id, workspace_member.workspace_id)
     return [OfferResponse.model_validate(o) for o in offers]
 
 
@@ -76,13 +78,13 @@ async def list_offers(
 async def get_offer(
     business_context_id: UUID,
     offer_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[OfferService, Depends(get_offer_service)],
 ) -> OfferResponse:
     """
     Get an offer by ID within a workspace.
     """
-    offer = await service.get(offer_id, business_context_id, workspace_id)
+    offer = await service.get(offer_id, business_context_id, workspace_member.workspace_id)
     if not offer:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -99,7 +101,7 @@ async def update_offer(
     business_context_id: UUID,
     offer_id: UUID,
     payload: OfferUpdate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[OfferService, Depends(get_offer_service)],
 ) -> OfferResponse:
     """
@@ -109,7 +111,7 @@ async def update_offer(
         offer = await service.update(
             offer_id=offer_id,
             business_context_id=business_context_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             name=payload.name,
             description=payload.description,
             offer_type=payload.offer_type,
@@ -143,13 +145,13 @@ async def update_offer(
 async def delete_offer(
     business_context_id: UUID,
     offer_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[OfferService, Depends(get_offer_service)],
 ) -> None:
     """
     Delete an offer within a workspace.
     """
-    deleted = await service.delete(offer_id, business_context_id, workspace_id)
+    deleted = await service.delete(offer_id, business_context_id, workspace_member.workspace_id)
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

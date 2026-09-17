@@ -12,7 +12,9 @@ production-grade one: cursor-based pagination, Postgres full-text search,
 and its first real read-through cache. Day 20 adds the system's first real
 authentication layer — JWT login/refresh/logout, Redis-based revocation,
 and password reset — and points the Day 15 rate limiter at real
-authenticated identity instead of a client-supplied header:
+authenticated identity instead of a client-supplied header. Day 21 (in
+progress) retrofits real ownership-chain enforcement onto those
+authenticated routes, closing the IDOR gap Day 20 explicitly left open:
 
 ```text
 Understand
@@ -882,6 +884,13 @@ enforcement onto any existing router — that retrofit is tracked as **Day
 21 - Ownership-Chain Enforcement Retrofit**. Days 15-19 must not be
 considered auth-complete until Day 21 lands.
 
+**Update:** Day 21 is now in progress (see the "Day 21 - Ownership-Chain
+Enforcement Retrofit (in progress)" section below) — the FK, the two
+authorization dependencies, and most router/test retrofitting have
+landed, but it is not yet complete (see that section's "Remaining work").
+Treat this gap as partially, not fully, closed until Day 21's section
+above no longer says "in progress."
+
 Verification completed with:
 
 - 12 new tests in `tests/test_auth.py`: login success/failure, identical
@@ -903,6 +912,109 @@ Verification completed with:
   available in this development environment).
 - No ownership-chain regression tests were added — out of scope for this
   day by design (see "KNOWN CRITICAL GAP" above).
+
+## Day 21 - Ownership-Chain Enforcement Retrofit (in progress)
+
+Retrofits real ownership-chain enforcement onto every Day 15-19 (and
+most Day 20) router, closing the IDOR gap Day 20's "KNOWN CRITICAL GAP"
+note left open. Full spec: `docs/development/day-21.md`. **This day is
+not yet complete** — see "Remaining work" below; this section documents
+what has actually landed and been verified so far.
+
+- `WorkspaceMember.user_id` is now a real `UUID` foreign key to
+  `User.id` (`ON DELETE CASCADE`), replacing the bare, unenforced
+  `String(255)` column noted in Day 20. Migration `w6x7y8z9a0`
+  (down-revision `v5w6x7y8z9`) also adds a composite index
+  `ix_workspace_members_user_id_workspace_id` on `(user_id,
+  workspace_id)`. On PostgreSQL the upgrade raises loudly (rather than
+  silently coercing) if any existing row's `user_id` isn't a well-formed
+  UUID matching a real `users.id` row.
+- New `app/authz/dependencies.py`: `require_workspace_access` verifies
+  the authenticated caller (Day 20's `get_current_user`) has a real
+  `WorkspaceMember` row for the requested `workspace_id` (via a genuine,
+  indexed `(user_id, workspace_id)` query, not a single-workspace
+  shortcut); `require_profile_access` composes on top of it to verify a
+  requested `profile_id` belongs to that same workspace. Both return
+  **404, never 403**, whether the workspace/profile doesn't exist at all
+  or exists but isn't the caller's, so cross-tenant resource existence
+  is never leaked — matching the architecture's existing ownership-chain
+  rule.
+- Every Day 15-19 router that previously trusted a client-supplied
+  `workspace_id`/`profile_id` now depends on `require_workspace_access`
+  or `require_profile_access` instead: `audience_intelligence`,
+  `audience_objections`, `audience_questions`, `audience_signals`,
+  `brands`, `business_context`, `competitors`, `content_briefs`,
+  `content_draft_variations`, `content_drafts`, `content_evaluations`,
+  `content_intelligence_synthesis`, `content_library`,
+  `content_opportunities`, `content_profiles`, `desires`,
+  `intelligence_analysis`, `market_intelligence`, `market_signals`,
+  `offers`, `pain_points`, `performance`, `personas`, `products`,
+  `published_content`, `services`, `topics`, `workspaces` (`POST
+  /workspaces` itself stays undependent — no membership row exists yet
+  at creation time; every other `/workspaces/{id}` route depends on
+  `require_workspace_access`).
+- A genuine pre-existing production regression was found and fixed in
+  the same pass: a stray `sort_by` parameter on
+  `content_opportunities.list_opportunities` that its repository method
+  doesn't accept, causing a `TypeError` at runtime — only surfaced once
+  the corresponding test could execute past the newly-enforced auth
+  layer to reach it. Confirmed as a genuine regression (not
+  pre-existing) against pre-Day-21 `develop` HEAD before fixing.
+- Every retrofitted functional test now authenticates as the correct
+  owning user before calling a workspace/profile-scoped route, via a new
+  `tests/conftest.py` helper, `authenticate_as_workspace_owner(client,
+  db_session, workspace_id)`, which seeds a fresh `User` + owning
+  `WorkspaceMember` row, mints a JWT, and sets it as the client's
+  default `Authorization` header. Cross-tenant isolation tests
+  deliberately call it twice (once per workspace) to simulate two
+  distinct authenticated users, not just two workspaces.
+
+Verification completed so far (all via actual `uv run pytest` runs, not
+assumed):
+
+- `test_audience_intelligence.py`, `test_audience_objections.py`,
+  `test_audience_questions.py`, `test_audience_signals.py`,
+  `test_brands.py`, `test_competitors.py`, `test_content_briefs.py`,
+  `test_content_opportunities.py`, `test_content_profiles.py`,
+  `test_desires.py`, `test_market_intelligence.py`,
+  `test_market_signals.py`, `test_pain_points.py`, `test_personas.py`,
+  `test_topics.py`, `test_content_drafts.py`,
+  `test_content_draft_variations.py`, `test_content_evaluations.py`,
+  `test_performance.py`, and `test_content_library.py` all retrofitted
+  and passing.
+- `test_business_context.py`, `test_products.py`, `test_services.py`,
+  and `test_offers.py` needed no changes and pass unmodified against the
+  retrofitted routers.
+- Migration chain validated with a single head (`w6x7y8z9a0`) via
+  `uv run alembic heads`.
+- Ruff check/format clean for every file touched so far, checked
+  individually per file immediately after editing it.
+
+### Remaining work (tracked, not yet done)
+
+- `test_workspaces.py` still fails (5 confirmed failures) against the
+  retrofitted `app/api/v1/workspaces.py` — its pre-Day-21 tests never
+  authenticate, so `GET`/`PATCH`/`DELETE /workspaces/{id}` now correctly
+  return 401 instead of the expected 200/204. Needs the same retrofit
+  pattern applied.
+- `test_content_intelligence_synthesis.py`, `test_intelligence_analysis.py`,
+  `test_published_content.py`, `test_opportunity_reasoning.py`, and
+  `test_infrastructure_jobs.py` have not yet been inspected/retrofitted.
+- No dedicated per-router "User A cannot access User B's data"
+  regression suite has been written yet.
+- No dependency-level unit tests exist yet for
+  `require_workspace_access`/`require_profile_access` in isolation.
+- A full-repository `uv run pytest -q` run (every file) has not been
+  completed; only the files listed above have been individually run and
+  confirmed.
+- Repo-wide `ruff check .` / `ruff format --check .` has not been re-run
+  across the whole repository this day.
+- The `backend-day` skill's Review step and `/backend-test` have not yet
+  been run for this day.
+
+**Days 15-19 and Day 20's own workspace routes should not be considered
+ownership-chain-complete until the remaining work above is closed and
+this section is updated to reflect it.**
 
 ## Platform Infrastructure
 

@@ -7,9 +7,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_workspace_access
 from app.core.config import settings
 from app.core.database import get_db_session
 from app.infrastructure.redis_client import get_redis
+from app.models.workspace_member import WorkspaceMember
 from app.schemas.content_draft import ContentDraftResponse
 from app.schemas.content_library import (
     ContentBriefLineageSummary,
@@ -42,7 +44,7 @@ def _default_view_cache_key(workspace_id: UUID, page_size: int) -> str:
 
 @router.get("/library", response_model=ContentLibraryListResponse)
 async def list_library_drafts(
-    workspace_id: Annotated[UUID, Query(...)],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[ContentLibraryService, Depends(get_content_library_service)],
     profile_id: UUID | None = None,
     status_filter: Annotated[str | None, Query(alias="status")] = None,
@@ -76,7 +78,7 @@ async def list_library_drafts(
     )
 
     redis = get_redis()
-    cache_key = _default_view_cache_key(workspace_id, page_size)
+    cache_key = _default_view_cache_key(workspace_member.workspace_id, page_size)
     if is_default_view:
         cached = await redis.get(cache_key)
         if cached is not None:
@@ -84,7 +86,7 @@ async def list_library_drafts(
 
     try:
         page = await service.list_library(
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             profile_id=profile_id,
             status=status_filter,
             platform=platform,
@@ -121,11 +123,11 @@ async def list_library_drafts(
 @router.get("/library/{draft_id}", response_model=ContentLibraryItemResponse)
 async def get_library_draft(
     draft_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[ContentLibraryService, Depends(get_content_library_service)],
 ) -> ContentLibraryItemResponse:
     try:
-        draft = await service.get_library_item(draft_id, workspace_id)
+        draft = await service.get_library_item(draft_id, workspace_member.workspace_id)
     except ValueError as error:
         raise not_found(error) from error
 

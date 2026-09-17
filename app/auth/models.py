@@ -12,11 +12,10 @@ class User(Base):
 
     Day 20 (Authentication Foundation) authenticates an EXISTING user
     against an EXISTING workspace only -- there is no signup endpoint.
-    `id` is a UUID (not an autoincrement int) specifically so a future
-    `WorkspaceMember.user_id -> User.id` foreign key (Day 21 -
-    Ownership-Chain Enforcement Retrofit) needs no type-conversion
-    migration; `WorkspaceMember.user_id` remains an unenforced
-    `String(255)` until that day.
+    `id` is a UUID (not an autoincrement int) so the
+    `WorkspaceMember.user_id -> User.id` foreign key added in Day 21
+    (Ownership-Chain Enforcement Retrofit) needs no type-conversion
+    migration.
     """
 
     __tablename__ = "users"

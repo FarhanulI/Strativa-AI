@@ -4,11 +4,10 @@ logout (revocation), and password reset.
 Day 20 scope note: this authenticates an EXISTING user against an
 EXISTING workspace only. There is no `register`/`create_user` here --
 signup and workspace auto-provisioning are a separate, already-planned
-follow-up day (see docs/development/day-20.md). `WorkspaceMember.user_id`
-is a bare, unenforced `String(255)` (Day 21 adds the foreign key), so the
-membership lookup here is a best-effort string match used only to build
-the JWT's `workspace_ids` fast-path hint -- never treated as
-authorization.
+follow-up day (see docs/development/day-20.md). The membership lookup
+here only builds the JWT's `workspace_ids` fast-path hint -- it is never
+treated as authorization (see app/authz/dependencies.py for the real,
+Day 21 ownership check).
 """
 
 import uuid
@@ -74,7 +73,7 @@ class AuthService:
     async def _workspace_ids_for_user(self, user_id: uuid.UUID) -> list[str]:
         """Best-effort fast-path hint only -- see module docstring."""
         result = await self.session.execute(
-            select(WorkspaceMember.workspace_id).where(WorkspaceMember.user_id == str(user_id))
+            select(WorkspaceMember.workspace_id).where(WorkspaceMember.user_id == user_id)
         )
         return [str(row) for row in result.scalars()]
 

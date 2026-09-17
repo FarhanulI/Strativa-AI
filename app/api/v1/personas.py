@@ -1,10 +1,12 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_workspace_access
 from app.core.database import get_db_session
+from app.models.workspace_member import WorkspaceMember
 from app.schemas.persona import PersonaCreate, PersonaResponse, PersonaUpdate
 from app.services.persona import PersonaService
 
@@ -24,13 +26,13 @@ async def get_persona_service(
 async def create_persona(
     audience_id: UUID,
     payload: PersonaCreate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[PersonaService, Depends(get_persona_service)],
 ) -> PersonaResponse:
     try:
         persona = await service.create(
             audience_intelligence_id=audience_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             name=payload.name,
             description=payload.description,
             demographics=payload.demographics,
@@ -52,7 +54,7 @@ async def create_persona(
 @router.get("", response_model=list[PersonaResponse])
 async def list_personas(
     audience_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[PersonaService, Depends(get_persona_service)],
     skip: int = 0,
     limit: int = 100,
@@ -60,7 +62,7 @@ async def list_personas(
     try:
         personas = await service.list(
             audience_intelligence_id=audience_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             skip=skip,
             limit=limit,
         )
@@ -76,14 +78,14 @@ async def list_personas(
 async def get_persona(
     audience_id: UUID,
     persona_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[PersonaService, Depends(get_persona_service)],
 ) -> PersonaResponse:
     try:
         persona = await service.get(
             audience_intelligence_id=audience_id,
             persona_id=persona_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
         )
         if not persona:
             raise HTTPException(
@@ -103,14 +105,14 @@ async def update_persona(
     audience_id: UUID,
     persona_id: UUID,
     payload: PersonaUpdate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[PersonaService, Depends(get_persona_service)],
 ) -> PersonaResponse:
     try:
         persona = await service.update(
             audience_intelligence_id=audience_id,
             persona_id=persona_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             name=payload.name,
             description=payload.description,
             demographics=payload.demographics,
@@ -138,14 +140,14 @@ async def update_persona(
 async def delete_persona(
     audience_id: UUID,
     persona_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[PersonaService, Depends(get_persona_service)],
 ) -> None:
     try:
         success = await service.delete(
             audience_intelligence_id=audience_id,
             persona_id=persona_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
         )
         if not success:
             raise HTTPException(

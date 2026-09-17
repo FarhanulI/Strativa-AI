@@ -1,6 +1,9 @@
+import uuid
+
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from tests.conftest import authenticate_as_workspace_owner
 
 
 async def _create_workspace(client: AsyncClient, slug: str) -> str:
@@ -44,9 +47,10 @@ async def _create_topic(client: AsyncClient, workspace_id: str, market_id: str, 
     return response.json()["id"]
 
 
-async def test_create_market_signal(override_get_db) -> None:
+async def test_create_market_signal(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "signal-create")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Creator")
         market_id = await _create_market_intelligence(client, workspace_id, profile_id)
 
@@ -71,9 +75,10 @@ async def test_create_market_signal(override_get_db) -> None:
     assert data["signal_metadata"]["platform"] == "instagram"
 
 
-async def test_list_market_signals(override_get_db) -> None:
+async def test_list_market_signals(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "signal-list")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Creator")
         market_id = await _create_market_intelligence(client, workspace_id, profile_id)
 
@@ -93,9 +98,10 @@ async def test_list_market_signals(override_get_db) -> None:
     assert len(response.json()) == 2
 
 
-async def test_get_market_signal(override_get_db) -> None:
+async def test_get_market_signal(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "signal-get")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Creator")
         market_id = await _create_market_intelligence(client, workspace_id, profile_id)
 
@@ -115,9 +121,10 @@ async def test_get_market_signal(override_get_db) -> None:
     assert response.json()["title"] == "Signal A"
 
 
-async def test_update_market_signal(override_get_db) -> None:
+async def test_update_market_signal(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "signal-update")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Creator")
         market_id = await _create_market_intelligence(client, workspace_id, profile_id)
 
@@ -139,9 +146,10 @@ async def test_update_market_signal(override_get_db) -> None:
     assert response.json()["status"] == "archived"
 
 
-async def test_delete_market_signal(override_get_db) -> None:
+async def test_delete_market_signal(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "signal-delete")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Creator")
         market_id = await _create_market_intelligence(client, workspace_id, profile_id)
 
@@ -160,9 +168,10 @@ async def test_delete_market_signal(override_get_db) -> None:
     assert response.status_code == 204
 
 
-async def test_filter_signals_by_status(override_get_db) -> None:
+async def test_filter_signals_by_status(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "signal-filter-status")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Creator")
         market_id = await _create_market_intelligence(client, workspace_id, profile_id)
 
@@ -188,9 +197,10 @@ async def test_filter_signals_by_status(override_get_db) -> None:
     assert data[0]["status"] == "archived"
 
 
-async def test_filter_signals_by_signal_type(override_get_db) -> None:
+async def test_filter_signals_by_signal_type(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "signal-filter-type")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Creator")
         market_id = await _create_market_intelligence(client, workspace_id, profile_id)
 
@@ -210,9 +220,10 @@ async def test_filter_signals_by_signal_type(override_get_db) -> None:
     assert len(response.json()) == 1
 
 
-async def test_filter_signals_by_topic_id(override_get_db) -> None:
+async def test_filter_signals_by_topic_id(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "signal-filter-topic")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Creator")
         market_id = await _create_market_intelligence(client, workspace_id, profile_id)
 
@@ -240,9 +251,10 @@ async def test_filter_signals_by_topic_id(override_get_db) -> None:
     assert data[0]["topic_id"] == topic_id
 
 
-async def test_signal_score_validation(override_get_db) -> None:
+async def test_signal_score_validation(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "signal-score")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Creator")
         market_id = await _create_market_intelligence(client, workspace_id, profile_id)
 
@@ -255,9 +267,10 @@ async def test_signal_score_validation(override_get_db) -> None:
     assert response.status_code == 422
 
 
-async def test_invalid_topic_ownership_rejected(override_get_db) -> None:
+async def test_invalid_topic_ownership_rejected(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "signal-topic-ownership")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_a_id = await _create_profile(client, workspace_id, "Creator A")
         profile_b_id = await _create_profile(client, workspace_id, "Creator B")
         market_a_id = await _create_market_intelligence(client, workspace_id, profile_a_id)
@@ -275,13 +288,15 @@ async def test_invalid_topic_ownership_rejected(override_get_db) -> None:
     assert "does not belong" in response.json()["detail"].lower()
 
 
-async def test_signal_workspace_isolation(override_get_db) -> None:
+async def test_signal_workspace_isolation(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace1_id = await _create_workspace(client, "signal-iso-1")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace1_id))
         workspace2_id = await _create_workspace(client, "signal-iso-2")
         profile_id = await _create_profile(client, workspace1_id, "Creator")
         market_id = await _create_market_intelligence(client, workspace1_id, profile_id)
 
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace2_id))
         response = await client.get(
             f"/api/v1/market-intelligence/{market_id}/signals",
             params={"workspace_id": workspace2_id},
@@ -290,9 +305,10 @@ async def test_signal_workspace_isolation(override_get_db) -> None:
     assert response.status_code == 404
 
 
-async def test_topic_deletion_sets_signal_topic_id_null(override_get_db) -> None:
+async def test_topic_deletion_sets_signal_topic_id_null(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "signal-topic-null")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Creator")
         market_id = await _create_market_intelligence(client, workspace_id, profile_id)
         topic_id = await _create_topic(client, workspace_id, market_id, "football")
@@ -319,9 +335,10 @@ async def test_topic_deletion_sets_signal_topic_id_null(override_get_db) -> None
     assert response.json()["topic_id"] is None
 
 
-async def test_signal_cascade_on_market_intelligence_delete(override_get_db) -> None:
+async def test_signal_cascade_on_market_intelligence_delete(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "signal-cascade")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "Creator")
         market_id = await _create_market_intelligence(client, workspace_id, profile_id)
 

@@ -1,13 +1,13 @@
 import json
 from typing import Annotated
-from uuid import UUID
 
 from arq.connections import ArqRedis
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_profile_access
 from app.content_intelligence.service import (
     ContentIntelligenceSynthesisService,
     synthesis_cache_key,
@@ -17,6 +17,7 @@ from app.core.database import get_db_session
 from app.infrastructure.jobs.pool import get_arq_pool
 from app.infrastructure.redis_client import get_redis
 from app.models.ai_job import AIJob
+from app.models.content_profile import ContentProfile
 from app.schemas.content_intelligence_synthesis import (
     ContentIntelligenceSynthesisPendingResponse,
     ContentIntelligenceSynthesisResponse,
@@ -56,8 +57,7 @@ def _pending_response(job: AIJob) -> JSONResponse:
 
 @router.get("/synthesis")
 async def get_synthesis(
-    profile_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     arq_pool: Annotated[ArqRedis, Depends(get_arq_pool)],
 ):
@@ -65,14 +65,14 @@ async def get_synthesis(
     # most expensive reasoning call in the system (see
     # docs/development/day-17.md's "Content Intelligence Synthesis Engine").
     redis = get_redis()
-    key = synthesis_cache_key(profile_id, workspace_id)
+    key = synthesis_cache_key(profile.id, profile.workspace_id)
     cached = await redis.get(key)
     if cached is not None:
         return ContentIntelligenceSynthesisResponse(**json.loads(cached))
 
     service = ContentIntelligenceSynthesisService(session)
     try:
-        result = await service.get_or_enqueue(profile_id, workspace_id, arq_pool)
+        result = await service.get_or_enqueue(profile.id, profile.workspace_id, arq_pool)
     except ValueError as error:
         raise not_found(error) from error
 

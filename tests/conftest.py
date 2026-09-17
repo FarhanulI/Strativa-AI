@@ -1,3 +1,4 @@
+import uuid
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock
 
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 import app.infrastructure.ratelimit.middleware as ratelimit_middleware
+from app.auth.jwt import encode_access_token
 from app.auth.models import User
 from app.auth.security import hash_password
 from app.core.database import Base, get_db_session
@@ -143,7 +145,7 @@ async def seed_user(db_session: AsyncSession, seed_workspace: Workspace) -> User
     db_session.add(
         WorkspaceMember(
             workspace_id=seed_workspace.id,
-            user_id=str(user.id),
+            user_id=user.id,
             role=WorkspaceRole.OWNER,
         )
     )
@@ -153,3 +155,33 @@ async def seed_user(db_session: AsyncSession, seed_workspace: Workspace) -> User
 
 
 _SEED_USER_PASSWORD = "correct-horse-battery-staple"
+
+
+async def authenticate_as_workspace_owner(
+    client: AsyncClient, db_session: AsyncSession, workspace_id: uuid.UUID
+) -> User:
+    """Seed a fresh User + owning WorkspaceMember for `workspace_id` and set
+    `client`'s default Authorization header so every subsequent request from
+    it is authenticated as that user (see app/authz/dependencies.py — Day 21
+    routes 404 for a caller with no WorkspaceMember row for the workspace).
+    """
+    user = User(
+        email=f"{uuid.uuid4().hex}@example.com",
+        hashed_password=hash_password(_SEED_USER_PASSWORD),
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    db_session.add(
+        WorkspaceMember(
+            workspace_id=workspace_id,
+            user_id=user.id,
+            role=WorkspaceRole.OWNER,
+        )
+    )
+    await db_session.commit()
+    await db_session.refresh(user)
+
+    token, _jti, _exp = encode_access_token(user.id, uuid.uuid4(), [str(workspace_id)])
+    client.headers["Authorization"] = f"Bearer {token}"
+    return user

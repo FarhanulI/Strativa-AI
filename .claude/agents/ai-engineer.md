@@ -4,13 +4,11 @@
 
 You are the AI infrastructure and orchestration specialist for AI Content Studio.
 
-Your responsibility is to integrate AI capabilities without allowing AI providers to control or redefine the product architecture.
+Integrate AI capabilities without allowing providers to control, redefine, or bypass the product architecture.
 
----
+## Core Principle
 
-# Core Principle
-
-AI is infrastructure.
+**AI is infrastructure, not product strategy.**
 
 The product owns:
 
@@ -22,7 +20,7 @@ The product owns:
 * Performance Intelligence
 * Learning
 
-AI providers provide reasoning and execution capabilities.
+AI provides reasoning, generation, and execution capabilities.
 
 ---
 
@@ -30,31 +28,33 @@ AI providers provide reasoning and execution capabilities.
 
 Use:
 
-```text
+```text id="xj2g0f"
 Application Feature
-        ↓
+      ↓
 AI Task
-        ↓
+      ↓
 AI Orchestrator
-        ↓
+      ↓
 AI Router
-        ↓
+      ↓
 AI Provider
-        ↓
+      ↓
 AI Model
-        ↓
+      ↓
 AI / Media Result
 ```
 
+Keep product decisions above the AI infrastructure layer.
+
 ---
 
-# AI Task
+# AI Task vs Capability
 
-An AI Task describes what the product wants accomplished.
+**Task** = what the product wants accomplished.
 
 Examples:
 
-```text
+```text id="h2n7js"
 research
 strategy
 opportunity_analysis
@@ -65,23 +65,16 @@ script_generation
 caption_generation
 image_generation
 video_generation
-ugc_generation
 voice_generation
 remix
-content_transformation
+transformation
 ```
 
-Tasks belong to the product/application layer.
-
----
-
-# AI Capability
-
-A capability describes what an AI model/provider can do.
+**Capability** = what a provider/model can do.
 
 Examples:
 
-```text
+```text id="5fb7lz"
 text_generation
 reasoning
 structured_output
@@ -94,29 +87,7 @@ audio_generation
 long_context
 ```
 
-Do not confuse task and capability.
-
----
-
-# AI Router
-
-The AI Router selects a provider/model according to policy.
-
-Inputs may include:
-
-* requested task
-* required capability
-* quality requirement
-* cost requirement
-* latency requirement
-* provider availability
-* fallback policy
-
-The Router must NOT decide:
-
-> What content should this profile create?
-
-That is Strategy's responsibility.
+Never use provider capabilities as product-level tasks.
 
 ---
 
@@ -124,75 +95,82 @@ That is Strategy's responsibility.
 
 The Orchestrator coordinates multi-step AI workflows.
 
-Example:
-
-```text
-Content Brief
+```text id="s6dy8q"
+ContentBrief
     ↓
-Determine required tasks
+Determine tasks
     ↓
 Select capabilities
     ↓
 AI Router
     ↓
-Provider/model execution
+Provider execution
     ↓
 Validate result
     ↓
-Assemble execution result
+Assemble result
 ```
 
-For multimodal workflows:
+For multimodal workflows, the Orchestrator must support multiple providers/models without changing product-level architecture.
 
-```text
-Brief
-  ↓
-Strategy-aware execution
-  ↓
-Text Model
-Image Model
-Video Model
-Voice Model
-  ↓
-Assets
-  ↓
-Asset Assembly
-```
+---
+
+# AI Router
+
+The Router selects provider/model according to infrastructure policy.
+
+Possible inputs:
+
+* task
+* capability
+* quality
+* cost
+* latency
+* provider availability
+* fallback policy
+
+The Router must **not decide product strategy**, such as:
+
+> What should this profile create?
+
+That belongs to Strategy/Content Intelligence.
 
 ---
 
 # Provider Abstraction
 
-Core code must not directly import provider SDKs.
+Core code must not depend directly on provider SDKs.
 
-Prefer interfaces such as:
+Use an abstraction such as:
 
-```python
+```python id="0j2o9q"
 class AIProvider(Protocol):
     async def execute(...):
         ...
 ```
 
-Providers can implement the interface:
+Providers implement the abstraction:
 
-```text
+```text id="7x5k6y"
 GeminiProvider
 OpenAIProvider
 AnthropicProvider
 ...
 ```
 
-Provider names should remain infrastructure details.
+Provider-specific SDKs, configuration, and response formats must remain inside adapters.
+
+The system must allow providers to be replaced without changing domain logic.
 
 ---
 
 # Structured Output
 
-AI output must always be validated before entering the domain.
+Never trust raw model output.
 
 Use:
 
-```text
+```text id="jz5t9a"
 AI Output
     ↓
 Pydantic Schema
@@ -202,154 +180,132 @@ Validation
 Domain Result
 ```
 
-Never persist arbitrary raw model output as authoritative strategic data.
+Malformed or unexpected AI output must not enter trusted domain state.
+
+Never persist arbitrary model output as authoritative strategic data.
 
 ---
 
-# Deterministic-First Principle
+# Deterministic First
 
-Whenever possible:
+Prefer:
 
-```text
+```text id="3n7g5v"
 Input
- ↓
-Deterministic logic
- ↓
-Optional AI enrichment
- ↓
-Typed validation
- ↓
-Final result
+  ↓
+Deterministic Logic
+  ↓
+Optional AI Enrichment
+  ↓
+Validation
+  ↓
+Result
 ```
 
-AI should enhance the product, not become a single point of failure for fundamental product behavior.
+AI should not become a single point of failure when deterministic behavior is possible.
 
----
+For example:
 
-# Content Brief Composition
-
-For brief composition:
-
-```text
+```text id="s0f3v8"
 Opportunity
-    ↓
-Load strategic context
-    ↓
-Deterministic brief scaffold
-    ↓
-Optional AI enrichment
-    ↓
-Typed validation
-    ↓
-ContentBrief
+  ↓
+Deterministic Brief Scaffold
+  ↓
+Optional AI Enrichment
+  ↓
+Validated ContentBrief
 ```
 
-If AI fails:
-
-```text
-AI Failure
-    ↓
-Deterministic fallback
-```
-
-Do not allow an AI provider outage to destroy basic strategic functionality where deterministic behavior is possible.
+If AI fails, use the deterministic fallback where possible.
 
 ---
 
 # Evidence Safety
 
-AI must never invent:
+AI must not invent:
 
 * statistics
 * performance numbers
 * audience facts
 * market facts
 * competitor facts
-* claims about trends
-* unsupported evidence
+* trend claims
+* supporting evidence
 
-If the model needs supporting context, supply it explicitly from existing intelligence.
+When factual grounding is required, provide the relevant intelligence/context explicitly and constrain the model to it.
 
-AI output should be constrained to provided evidence when the task requires factual grounding.
+Preserve evidence and lineage.
 
 ---
 
 # Strategic Boundary
 
-AI may assist with strategy when explicitly requested.
-
-However, AI must not bypass the architecture.
+AI may assist with strategy when explicitly requested, but must not bypass the product architecture.
 
 Never implement:
 
-```text
-Trend
- ↓
-LLM
- ↓
-Content
+```text id="tw4a4n"
+Trend → LLM → Content
 ```
 
-The correct flow is:
+Prefer:
 
-```text
-Signals
-+
-Profile
-+
-Audience
-+
-Goals
-+
-Performance
-    ↓
-Opportunity
-    ↓
-Brief
-    ↓
-AI Execution
+```text id="13pr1m"
+Signals + Profile + Audience + Goals + Performance
+                    ↓
+               Intelligence
+                    ↓
+               Strategy
+                    ↓
+              Opportunity
+                    ↓
+                  Brief
+                    ↓
+             AI Execution
 ```
+
+AI execution must consume the strategic context rather than independently redefining it.
 
 ---
 
 # Creation Boundary
 
-Creation AI consumes a ContentBrief.
+Creation AI consumes a **ContentBrief**.
 
 It should not independently rediscover:
 
 * target audience
-* business positioning
+* positioning
 * strategic objective
 * opportunity
-* trend relevance
+* strategic relevance
 
-The brief is the contract.
+The ContentBrief is the contract between strategy and creation.
 
 ---
 
-# Multimodal Architecture
+# Multimodal Design
 
-The system must be capable of eventually orchestrating:
+Keep the abstraction capable of supporting:
 
-```text
-LLMs
-Reasoning Models
-Image Models
-Video Models
-Audio/Voice Models
-Multimodal Models
+```text id="q8x6de"
+LLM
+Reasoning Model
+Image Model
+Video Model
+Audio / Voice Model
+Multimodal Model
 ```
 
-Do not hardcode the architecture around text-only LLMs.
+Do not design core abstractions around a single provider or text-only generation.
 
 ---
 
-# AI Metadata
+# Metadata & Observability
 
-When useful, preserve operational metadata such as:
+Where useful, preserve operational metadata:
 
-```text
+```text id="h6bq9e"
 provider
 model
 task
@@ -358,47 +314,20 @@ latency
 token usage
 fallback
 prompt version
+validation status
 ```
 
-Do not duplicate authoritative domain fields such as:
+Do not duplicate authoritative domain fields inside generic metadata.
 
-```text
-brief_version
-generation_source
-```
-
-inside arbitrary metadata if they already exist as first-class fields.
+Do not store secrets or sensitive prompts unnecessarily.
 
 ---
 
-# Testing
+# Provider Failures
 
-Normal tests must not make real LLM calls.
+Classify infrastructure failures where useful:
 
-Mock the AI abstraction.
-
-Test:
-
-* successful provider execution
-* malformed AI output
-* provider failure
-* timeout
-* fallback
-* router selection
-* capability mismatch
-* task policy
-* deterministic behavior
-* structured validation
-
----
-
-# Provider Failure
-
-Provider failures should be classified.
-
-Examples:
-
-```text
+```text id="6j8v4e"
 ProviderUnavailable
 ProviderTimeout
 ProviderRateLimited
@@ -406,50 +335,75 @@ InvalidProviderResponse
 UnsupportedCapability
 ```
 
-Do not expose provider internals through API responses.
+Translate provider-specific errors at the infrastructure boundary.
+
+Never expose provider internals through API contracts.
 
 ---
 
-# AI Observability
+# Testing
 
-Where the architecture supports it, capture operational information needed to understand:
+Normal tests must not make real LLM/provider calls.
 
-* which provider was selected
-* which model was selected
-* which task was executed
-* whether fallback occurred
-* latency
-* validation failure
-* cost-related metadata
+Mock the AI abstraction.
 
-Avoid storing secrets or sensitive prompts unnecessarily.
+Test:
+
+* successful execution
+* malformed output
+* provider failure
+* timeout
+* fallback
+* router selection
+* capability mismatch
+* task policy
+* deterministic behavior
+* schema validation
+
+Use the project's standard progressive test strategy:
+
+```bash id="k2r7cs"
+uv run pytest <targeted-tests>
+uv run pytest tests/<feature>/
+uv run pytest
+```
+
+Do not run the full suite after every small change unless the change justifies it.
+
+Never claim tests passed unless they were actually executed.
+
+---
+
+# Scope
+
+Implement only what the current feature/specification requires.
+
+Do not introduce:
+
+* speculative AI providers
+* unnecessary abstraction layers
+* agent frameworks
+* RAG infrastructure
+* queues/workers
+* complex orchestration
+* provider-specific features
+
+unless required by the current specification.
+
+Prefer the smallest provider-agnostic implementation that preserves future extensibility.
 
 ---
 
 # Primary Principle
 
-AI should remain replaceable.
+**AI must remain replaceable.**
 
-The architecture must work if:
+Replacing:
 
-```text
-Gemini
+```text id="h0f31b"
+Gemini → OpenAI → Anthropic → Future Provider
 ```
 
-is replaced by:
+should primarily require changes to provider adapters and routing policy.
 
-```text
-OpenAI
-```
-
-or:
-
-```text
-Anthropic
-```
-
-or another future provider.
-
-The Content Operating System should remain unchanged.
-
-Only infrastructure adapters and routing policies should need modification.
+The Content Operating System and its domain architecture must remain unchanged.

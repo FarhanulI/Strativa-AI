@@ -6,6 +6,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from tests.conftest import authenticate_as_workspace_owner
 from tests.test_content_briefs import create_opportunity, create_profile, create_workspace
 from tests.test_content_drafts import create_ready_brief
 
@@ -63,9 +64,10 @@ async def add_selected_caption(
     return selected.json()["content"]
 
 
-async def test_library_list_filters_and_sorting(override_get_db) -> None:
+async def test_library_list_filters_and_sorting(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "library-list")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
 
@@ -125,9 +127,11 @@ async def test_library_list_filters_and_sorting(override_get_db) -> None:
 
 async def test_library_cursor_pagination_pages_without_skip_or_duplicate(
     override_get_db,
+    db_session,
 ) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "library-cursor")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
 
@@ -213,9 +217,10 @@ async def test_library_cursor_pagination_pages_without_skip_or_duplicate(
         assert len(seen) == len(set(seen))
 
 
-async def test_library_invalid_cursor_rejected(override_get_db) -> None:
+async def test_library_invalid_cursor_rejected(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "library-bad-cursor")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
 
         bad = await client.get(
             "/api/v1/library",
@@ -224,9 +229,10 @@ async def test_library_invalid_cursor_rejected(override_get_db) -> None:
         assert bad.status_code == 400
 
 
-async def test_library_cursor_rejects_mismatched_sort(override_get_db) -> None:
+async def test_library_cursor_rejects_mismatched_sort(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "library-cursor-mismatch")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
         await create_ready_draft(
@@ -254,9 +260,10 @@ async def test_library_cursor_rejects_mismatched_sort(override_get_db) -> None:
         assert mismatched.status_code == 400
 
 
-async def test_library_max_page_size_enforced(override_get_db) -> None:
+async def test_library_max_page_size_enforced(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "library-max-page")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
 
@@ -281,9 +288,10 @@ async def test_library_max_page_size_enforced(override_get_db) -> None:
         assert data["has_more"] is True
 
 
-async def test_library_list_date_range_filters(override_get_db) -> None:
+async def test_library_list_date_range_filters(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "library-date")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
 
@@ -327,9 +335,10 @@ async def test_library_list_date_range_filters(override_get_db) -> None:
         assert second["id"] not in older_ids
 
 
-async def test_library_search_matches_title_hook_and_caption(override_get_db) -> None:
+async def test_library_search_matches_title_hook_and_caption(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "library-search")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
 
@@ -383,9 +392,10 @@ async def test_library_search_matches_title_hook_and_caption(override_get_db) ->
         assert no_match.json()["items"] == []
 
 
-async def test_library_retrieve_attaches_lineage_summary(override_get_db) -> None:
+async def test_library_retrieve_attaches_lineage_summary(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "library-lineage")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         opportunity_id = await create_opportunity(client, workspace_id, profile_id)
 
@@ -425,15 +435,12 @@ async def test_library_retrieve_attaches_lineage_summary(override_get_db) -> Non
         assert data["opportunity"]["title"]
 
 
-async def test_library_cross_workspace_and_profile_isolation(override_get_db) -> None:
+async def test_library_cross_workspace_and_profile_isolation(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_a = await create_workspace(client, "library-a")
-        workspace_b = await create_workspace(client, "library-b")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_a))
         profile_a = await create_profile(client, workspace_a, "A")
-        profile_b = await create_profile(client, workspace_b, "B")
         brief_a = await create_ready_brief(client, workspace_a, profile_a)
-        brief_b = await create_ready_brief(client, workspace_b, profile_b)
-
         draft_a = await create_ready_draft(
             client,
             workspace_a,
@@ -443,6 +450,21 @@ async def test_library_cross_workspace_and_profile_isolation(override_get_db) ->
             hook="Hook A",
             body="Body A",
         )
+
+        list_a = await client.get("/api/v1/library", params={"workspace_id": workspace_a})
+        assert list_a.status_code == 200
+        assert {item["id"] for item in list_a.json()["items"]} == {draft_a["id"]}
+
+        cross_profile_filter = await client.get(
+            "/api/v1/library",
+            params={"workspace_id": workspace_a, "profile_id": uuid.uuid4()},
+        )
+        assert cross_profile_filter.status_code == 404
+
+        workspace_b = await create_workspace(client, "library-b")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_b))
+        profile_b = await create_profile(client, workspace_b, "B")
+        brief_b = await create_ready_brief(client, workspace_b, profile_b)
         await create_ready_draft(
             client,
             workspace_b,
@@ -452,10 +474,6 @@ async def test_library_cross_workspace_and_profile_isolation(override_get_db) ->
             hook="Hook B",
             body="Body B",
         )
-
-        list_a = await client.get("/api/v1/library", params={"workspace_id": workspace_a})
-        assert list_a.status_code == 200
-        assert {item["id"] for item in list_a.json()["items"]} == {draft_a["id"]}
 
         cross_profile_filter = await client.get(
             "/api/v1/library",
@@ -470,9 +488,10 @@ async def test_library_cross_workspace_and_profile_isolation(override_get_db) ->
         assert hidden.status_code == 404
 
 
-async def test_library_empty_and_unknown_draft(override_get_db) -> None:
+async def test_library_empty_and_unknown_draft(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "library-empty")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
 
         empty = await client.get("/api/v1/library", params={"workspace_id": workspace_id})
         assert empty.status_code == 200
@@ -486,10 +505,11 @@ async def test_library_empty_and_unknown_draft(override_get_db) -> None:
 
 
 async def test_library_default_view_is_cached_and_invalidated_on_create(
-    override_get_db, _fake_cache_redis
+    override_get_db, _fake_cache_redis, db_session
 ) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "library-cache")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
 

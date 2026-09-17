@@ -5,8 +5,10 @@ from arq.connections import ArqRedis
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_profile_access
 from app.core.database import get_db_session
 from app.infrastructure.jobs.pool import get_arq_pool
+from app.models.content_profile import ContentProfile
 from app.schemas.content_opportunity import (
     ContentOpportunityCreate,
     ContentOpportunityResponse,
@@ -29,15 +31,14 @@ def not_found(error: ValueError) -> HTTPException:
 
 @router.post("", response_model=ContentOpportunityResponse, status_code=status.HTTP_201_CREATED)
 async def create_opportunity(
-    profile_id: UUID,
     payload: ContentOpportunityCreate,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentOpportunityService, Depends(get_content_opportunity_service)],
     arq_pool: Annotated[ArqRedis, Depends(get_arq_pool)],
 ) -> ContentOpportunityResponse:
     try:
         opportunity = await service.create(
-            profile_id, workspace_id, arq_pool, **payload.model_dump()
+            profile.id, profile.workspace_id, arq_pool, **payload.model_dump()
         )
     except ValueError as error:
         raise not_found(error) from error
@@ -46,8 +47,7 @@ async def create_opportunity(
 
 @router.get("", response_model=list[ContentOpportunityResponse])
 async def list_opportunities(
-    profile_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentOpportunityService, Depends(get_content_opportunity_service)],
     status_filter: Annotated[str | None, Query(alias="status")] = None,
     source_signal: str | None = None,
@@ -59,8 +59,8 @@ async def list_opportunities(
 ) -> list[ContentOpportunityResponse]:
     try:
         opportunities = await service.list(
-            profile_id,
-            workspace_id,
+            profile.id,
+            profile.workspace_id,
             status=status_filter,
             source_signal=source_signal,
             target_objective=target_objective,
@@ -76,13 +76,12 @@ async def list_opportunities(
 
 @router.get("/{opportunity_id}", response_model=ContentOpportunityResponse)
 async def get_opportunity(
-    profile_id: UUID,
     opportunity_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentOpportunityService, Depends(get_content_opportunity_service)],
 ) -> ContentOpportunityResponse:
     try:
-        opportunity = await service.get(profile_id, opportunity_id, workspace_id)
+        opportunity = await service.get(profile.id, opportunity_id, profile.workspace_id)
     except ValueError as error:
         raise not_found(error) from error
     if not opportunity:
@@ -92,15 +91,17 @@ async def get_opportunity(
 
 @router.patch("/{opportunity_id}", response_model=ContentOpportunityResponse)
 async def update_opportunity(
-    profile_id: UUID,
     opportunity_id: UUID,
     payload: ContentOpportunityUpdate,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentOpportunityService, Depends(get_content_opportunity_service)],
 ) -> ContentOpportunityResponse:
     try:
         opportunity = await service.update(
-            profile_id, opportunity_id, workspace_id, **payload.model_dump(exclude_unset=True)
+            profile.id,
+            opportunity_id,
+            profile.workspace_id,
+            **payload.model_dump(exclude_unset=True),
         )
     except ValueError as error:
         raise not_found(error) from error
@@ -111,13 +112,12 @@ async def update_opportunity(
 
 @router.delete("/{opportunity_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_opportunity(
-    profile_id: UUID,
     opportunity_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentOpportunityService, Depends(get_content_opportunity_service)],
 ) -> None:
     try:
-        deleted = await service.delete(profile_id, opportunity_id, workspace_id)
+        deleted = await service.delete(profile.id, opportunity_id, profile.workspace_id)
     except ValueError as error:
         raise not_found(error) from error
     if not deleted:

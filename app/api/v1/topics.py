@@ -1,10 +1,12 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_workspace_access
 from app.core.database import get_db_session
+from app.models.workspace_member import WorkspaceMember
 from app.schemas.topic import TopicCreate, TopicResponse, TopicUpdate
 from app.services.topic import TopicService
 
@@ -24,13 +26,13 @@ async def get_topic_service(
 async def create_topic(
     market_id: UUID,
     payload: TopicCreate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[TopicService, Depends(get_topic_service)],
 ) -> TopicResponse:
     try:
         topic = await service.create(
             market_intelligence_id=market_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             name=payload.name,
             description=payload.description,
             relevance_score=payload.relevance_score,
@@ -51,7 +53,7 @@ async def create_topic(
 @router.get("", response_model=list[TopicResponse])
 async def list_topics(
     market_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[TopicService, Depends(get_topic_service)],
     skip: int = 0,
     limit: int = 100,
@@ -59,7 +61,7 @@ async def list_topics(
     try:
         topics = await service.list(
             market_intelligence_id=market_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             skip=skip,
             limit=limit,
         )
@@ -75,14 +77,14 @@ async def list_topics(
 async def get_topic(
     market_id: UUID,
     topic_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[TopicService, Depends(get_topic_service)],
 ) -> TopicResponse:
     try:
         topic = await service.get(
             market_intelligence_id=market_id,
             topic_id=topic_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
         )
         if not topic:
             raise HTTPException(
@@ -102,14 +104,14 @@ async def update_topic(
     market_id: UUID,
     topic_id: UUID,
     payload: TopicUpdate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[TopicService, Depends(get_topic_service)],
 ) -> TopicResponse:
     try:
         topic = await service.update(
             market_intelligence_id=market_id,
             topic_id=topic_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             name=payload.name,
             description=payload.description,
             relevance_score=payload.relevance_score,
@@ -136,14 +138,14 @@ async def update_topic(
 async def delete_topic(
     market_id: UUID,
     topic_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[TopicService, Depends(get_topic_service)],
 ) -> None:
     try:
         success = await service.delete(
             market_intelligence_id=market_id,
             topic_id=topic_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
         )
         if not success:
             raise HTTPException(

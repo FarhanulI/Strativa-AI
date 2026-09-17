@@ -1,11 +1,13 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_profile_access
 from app.core.database import get_db_session
 from app.models.content_draft_variation import VariationType
+from app.models.content_profile import ContentProfile
 from app.schemas.content_draft_variation import (
     ContentDraftVariationGenerateRequest,
     ContentDraftVariationResponse,
@@ -32,17 +34,16 @@ def not_found(error: ValueError) -> HTTPException:
     status_code=status.HTTP_201_CREATED,
 )
 async def generate_variations(
-    profile_id: UUID,
     draft_id: UUID,
     payload: ContentDraftVariationGenerateRequest,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentDraftVariationService, Depends(get_variation_service)],
 ) -> list[ContentDraftVariationResponse]:
     try:
         variations = await service.generate(
-            profile_id,
+            profile.id,
             draft_id,
-            workspace_id,
+            profile.workspace_id,
             variation_type=payload.variation_type,
             count=payload.count,
             use_ai=payload.use_ai,
@@ -60,14 +61,13 @@ async def generate_variations(
     response_model=list[ContentDraftVariationResponse],
 )
 async def list_variations(
-    profile_id: UUID,
     draft_id: UUID,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentDraftVariationService, Depends(get_variation_service)],
     variation_type: VariationType | None = None,
 ) -> list[ContentDraftVariationResponse]:
     try:
-        variations = await service.list(profile_id, draft_id, workspace_id, variation_type)
+        variations = await service.list(profile.id, draft_id, profile.workspace_id, variation_type)
     except ValueError as error:
         raise not_found(error) from error
     return [ContentDraftVariationResponse.model_validate(v) for v in variations]
@@ -78,16 +78,15 @@ async def list_variations(
     response_model=ContentDraftVariationResponse,
 )
 async def select_variation(
-    profile_id: UUID,
     draft_id: UUID,
     variation_id: UUID,
     payload: ContentDraftVariationSelectRequest,
-    workspace_id: Annotated[UUID, Query(...)],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentDraftVariationService, Depends(get_variation_service)],
 ) -> ContentDraftVariationResponse:
     try:
         variation = await service.select(
-            profile_id, draft_id, variation_id, workspace_id, payload.is_selected
+            profile.id, draft_id, variation_id, profile.workspace_id, payload.is_selected
         )
     except ValueError as error:
         message = str(error)

@@ -1,10 +1,12 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_workspace_access
 from app.core.database import get_db_session
+from app.models.workspace_member import WorkspaceMember
 from app.schemas.competitor import CompetitorCreate, CompetitorResponse, CompetitorUpdate
 from app.services.competitor import CompetitorService
 
@@ -24,13 +26,13 @@ async def get_competitor_service(
 async def create_competitor(
     market_id: UUID,
     payload: CompetitorCreate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[CompetitorService, Depends(get_competitor_service)],
 ) -> CompetitorResponse:
     try:
         competitor = await service.create(
             market_intelligence_id=market_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             name=payload.name,
             description=payload.description,
             platform=payload.platform,
@@ -50,7 +52,7 @@ async def create_competitor(
 @router.get("", response_model=list[CompetitorResponse])
 async def list_competitors(
     market_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[CompetitorService, Depends(get_competitor_service)],
     skip: int = 0,
     limit: int = 100,
@@ -58,7 +60,7 @@ async def list_competitors(
     try:
         competitors = await service.list(
             market_intelligence_id=market_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             skip=skip,
             limit=limit,
         )
@@ -74,14 +76,14 @@ async def list_competitors(
 async def get_competitor(
     market_id: UUID,
     competitor_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[CompetitorService, Depends(get_competitor_service)],
 ) -> CompetitorResponse:
     try:
         competitor = await service.get(
             market_intelligence_id=market_id,
             competitor_id=competitor_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
         )
         if not competitor:
             raise HTTPException(
@@ -101,14 +103,14 @@ async def update_competitor(
     market_id: UUID,
     competitor_id: UUID,
     payload: CompetitorUpdate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[CompetitorService, Depends(get_competitor_service)],
 ) -> CompetitorResponse:
     try:
         competitor = await service.update(
             market_intelligence_id=market_id,
             competitor_id=competitor_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
             name=payload.name,
             description=payload.description,
             platform=payload.platform,
@@ -134,14 +136,14 @@ async def update_competitor(
 async def delete_competitor(
     market_id: UUID,
     competitor_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    workspace_member: Annotated[WorkspaceMember, Depends(require_workspace_access)],
     service: Annotated[CompetitorService, Depends(get_competitor_service)],
 ) -> None:
     try:
         success = await service.delete(
             market_intelligence_id=market_id,
             competitor_id=competitor_id,
-            workspace_id=workspace_id,
+            workspace_id=workspace_member.workspace_id,
         )
         if not success:
             raise HTTPException(

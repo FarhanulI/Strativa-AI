@@ -1,10 +1,11 @@
 from typing import Annotated
-from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.dependencies import require_profile_access
 from app.core.database import get_db_session
+from app.models.content_profile import ContentProfile
 from app.schemas.business_context import (
     BusinessContextCreate,
     BusinessContextResponse,
@@ -27,9 +28,8 @@ async def get_business_context_service(
     status_code=status.HTTP_201_CREATED,
 )
 async def create_business_context(
-    profile_id: UUID,
     payload: BusinessContextCreate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[BusinessContextService, Depends(get_business_context_service)],
 ) -> BusinessContextResponse:
     """
@@ -39,8 +39,8 @@ async def create_business_context(
     """
     try:
         context = await service.create(
-            profile_id=profile_id,
-            workspace_id=workspace_id,
+            profile_id=profile.id,
+            workspace_id=profile.workspace_id,
             commercial_objectives=payload.commercial_objectives,
             target_market=payload.target_market,
             pricing_position=payload.pricing_position,
@@ -60,14 +60,13 @@ async def create_business_context(
 
 @router.get("/{profile_id}/business-context", response_model=BusinessContextResponse)
 async def get_business_context(
-    profile_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[BusinessContextService, Depends(get_business_context_service)],
 ) -> BusinessContextResponse:
     """
     Get the business context for a content profile within a workspace.
     """
-    context = await service.get(profile_id, workspace_id)
+    context = await service.get(profile.id, profile.workspace_id)
     if not context:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -78,17 +77,16 @@ async def get_business_context(
 
 @router.patch("/{profile_id}/business-context", response_model=BusinessContextResponse)
 async def update_business_context(
-    profile_id: UUID,
     payload: BusinessContextUpdate,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[BusinessContextService, Depends(get_business_context_service)],
 ) -> BusinessContextResponse:
     """
     Update a business context for a content profile within a workspace.
     """
     context = await service.update(
-        profile_id=profile_id,
-        workspace_id=workspace_id,
+        profile_id=profile.id,
+        workspace_id=profile.workspace_id,
         commercial_objectives=payload.commercial_objectives,
         target_market=payload.target_market,
         pricing_position=payload.pricing_position,
@@ -103,14 +101,13 @@ async def update_business_context(
 
 @router.delete("/{profile_id}/business-context", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_business_context(
-    profile_id: UUID,
-    workspace_id: Annotated[UUID, Query(..., description="The workspace ID")],
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[BusinessContextService, Depends(get_business_context_service)],
 ) -> None:
     """
     Delete a business context for a content profile within a workspace.
     """
-    deleted = await service.delete(profile_id, workspace_id)
+    deleted = await service.delete(profile.id, profile.workspace_id)
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

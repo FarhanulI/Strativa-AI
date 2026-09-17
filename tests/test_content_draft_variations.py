@@ -5,6 +5,7 @@ from httpx import ASGITransport, AsyncClient
 from app.main import app
 from app.services.ai.router import AIResult
 from app.services.ai.schemas.responses import AIResponseMetadata
+from tests.conftest import authenticate_as_workspace_owner
 from tests.test_content_briefs import create_opportunity, create_profile, create_workspace
 from tests.test_content_drafts import create_ready_brief
 
@@ -26,9 +27,10 @@ async def create_draft(client: AsyncClient, workspace_id: str, profile_id: str) 
     return await create_draft_from_brief(client, workspace_id, profile_id, brief_id)
 
 
-async def test_deterministic_hook_variations(override_get_db) -> None:
+async def test_deterministic_hook_variations(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "var-hook")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         draft_id = await create_draft(client, workspace_id, profile_id)
 
@@ -48,9 +50,10 @@ async def test_deterministic_hook_variations(override_get_db) -> None:
             assert v["rationale"]
 
 
-async def test_deterministic_caption_variations_count_bounds(override_get_db) -> None:
+async def test_deterministic_caption_variations_count_bounds(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "var-caption")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         draft_id = await create_draft(client, workspace_id, profile_id)
 
@@ -87,7 +90,9 @@ async def test_deterministic_caption_variations_count_bounds(override_get_db) ->
         assert one.json()[0]["variation_index"] == 6
 
 
-async def test_ai_variation_generation_and_fallback(monkeypatch, override_get_db) -> None:
+async def test_ai_variation_generation_and_fallback(
+    monkeypatch, override_get_db, db_session
+) -> None:
     async def fake_generate(self, variation_type, count, brief, draft):
         from app.schemas.content_draft_variation import (
             ContentVariationLLMItem,
@@ -111,6 +116,7 @@ async def test_ai_variation_generation_and_fallback(monkeypatch, override_get_db
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "var-ai")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         draft_id = await create_draft(client, workspace_id, profile_id)
 
@@ -135,6 +141,7 @@ async def test_ai_variation_generation_and_fallback(monkeypatch, override_get_db
         failing_generate,
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         fallback = await client.post(
             f"/api/v1/profiles/{profile_id}/drafts/{draft_id}/variations",
             params={"workspace_id": workspace_id},
@@ -149,7 +156,9 @@ async def test_ai_variation_generation_and_fallback(monkeypatch, override_get_db
         assert "provider failure" not in fallback.text
 
 
-async def test_malformed_ai_response_falls_back_partially(monkeypatch, override_get_db) -> None:
+async def test_malformed_ai_response_falls_back_partially(
+    monkeypatch, override_get_db, db_session
+) -> None:
     async def partial_generate(self, variation_type, count, brief, draft):
         from app.schemas.content_draft_variation import (
             ContentVariationLLMItem,
@@ -168,6 +177,7 @@ async def test_malformed_ai_response_falls_back_partially(monkeypatch, override_
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "var-partial")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         draft_id = await create_draft(client, workspace_id, profile_id)
 
@@ -183,9 +193,12 @@ async def test_malformed_ai_response_falls_back_partially(monkeypatch, override_
         assert sources == ["ai", "deterministic", "deterministic"]
 
 
-async def test_selection_updates_draft_and_replaces_previous_selection(override_get_db) -> None:
+async def test_selection_updates_draft_and_replaces_previous_selection(
+    override_get_db, db_session
+) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "var-select")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         draft_id = await create_draft(client, workspace_id, profile_id)
 
@@ -252,9 +265,10 @@ async def test_selection_updates_draft_and_replaces_previous_selection(override_
         assert draft_after.json()["caption"] == select_caption.json()["content"]
 
 
-async def test_cannot_select_variation_from_another_draft(override_get_db) -> None:
+async def test_cannot_select_variation_from_another_draft(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "var-cross-draft")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
         draft_a = await create_draft_from_brief(client, workspace_id, profile_id, brief_id)
@@ -275,13 +289,16 @@ async def test_cannot_select_variation_from_another_draft(override_get_db) -> No
         assert response.status_code == 404
 
 
-async def test_variation_profile_and_workspace_isolation(override_get_db) -> None:
+async def test_variation_profile_and_workspace_isolation(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_a = await create_workspace(client, "var-a")
-        workspace_b = await create_workspace(client, "var-b")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_a))
         profile_a = await create_profile(client, workspace_a, "A")
-        profile_b = await create_profile(client, workspace_b, "B")
         draft_id = await create_draft(client, workspace_a, profile_a)
+
+        workspace_b = await create_workspace(client, "var-b")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_b))
+        profile_b = await create_profile(client, workspace_b, "B")
 
         cross_workspace = await client.post(
             f"/api/v1/profiles/{profile_a}/drafts/{draft_id}/variations",
@@ -297,9 +314,12 @@ async def test_variation_profile_and_workspace_isolation(override_get_db) -> Non
         assert cross_profile.status_code == 404
 
 
-async def test_business_profile_without_and_with_business_context(override_get_db) -> None:
+async def test_business_profile_without_and_with_business_context(
+    override_get_db, db_session
+) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "var-business")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_response = await client.post(
             "/api/v1/profiles",
             params={"workspace_id": workspace_id},
@@ -345,9 +365,12 @@ async def test_business_profile_without_and_with_business_context(override_get_d
         assert len(response.json()) == 2
 
 
-async def test_generate_variations_for_unknown_draft_returns_404(override_get_db) -> None:
+async def test_generate_variations_for_unknown_draft_returns_404(
+    override_get_db, db_session
+) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "var-unknown-draft")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         unknown_draft_id = str(uuid.uuid4())
 
@@ -359,9 +382,10 @@ async def test_generate_variations_for_unknown_draft_returns_404(override_get_db
         assert response.status_code == 404
 
 
-async def test_select_unknown_variation_returns_404(override_get_db) -> None:
+async def test_select_unknown_variation_returns_404(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await create_workspace(client, "var-unknown-variation")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await create_profile(client, workspace_id, "Creator")
         draft_id = await create_draft(client, workspace_id, profile_id)
         unknown_variation_id = str(uuid.uuid4())

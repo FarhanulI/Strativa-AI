@@ -1,6 +1,9 @@
+import uuid
+
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from tests.conftest import authenticate_as_workspace_owner
 
 
 async def _create_workspace(client: AsyncClient, slug: str) -> str:
@@ -22,9 +25,10 @@ async def _create_profile(client: AsyncClient, workspace_id: str, type_: str, na
     return response.json()["id"]
 
 
-async def test_create_brand_for_creator(override_get_db) -> None:
+async def test_create_brand_for_creator(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "brand-create-creator")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "creator", "Rahim Sports")
 
         response = await client.post(
@@ -43,9 +47,10 @@ async def test_create_brand_for_creator(override_get_db) -> None:
     assert data["positioning"] == "An energetic football commentator"
 
 
-async def test_create_brand_for_business(override_get_db) -> None:
+async def test_create_brand_for_business(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "brand-create-business")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "business", "ABC Sports")
 
         response = await client.post(
@@ -61,9 +66,10 @@ async def test_create_brand_for_business(override_get_db) -> None:
     assert response.json()["content_profile_id"] == profile_id
 
 
-async def test_get_brand(override_get_db) -> None:
+async def test_get_brand(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "brand-get")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "creator", "Creator One")
 
         create_response = await client.post(
@@ -84,9 +90,10 @@ async def test_get_brand(override_get_db) -> None:
     assert data["content_profile_id"] == profile_id
 
 
-async def test_update_brand(override_get_db) -> None:
+async def test_update_brand(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "brand-update")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "creator", "Creator One")
 
         await client.post(
@@ -106,9 +113,10 @@ async def test_update_brand(override_get_db) -> None:
     assert response.json()["mission"] == "Make football simpler"
 
 
-async def test_delete_brand(override_get_db) -> None:
+async def test_delete_brand(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "brand-delete")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "creator", "Creator One")
 
         await client.post(
@@ -130,9 +138,10 @@ async def test_delete_brand(override_get_db) -> None:
     assert get_response.status_code == 404
 
 
-async def test_duplicate_brand_returns_409(override_get_db) -> None:
+async def test_duplicate_brand_returns_409(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "brand-duplicate")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "business", "Business One")
 
         first = await client.post(
@@ -151,9 +160,10 @@ async def test_duplicate_brand_returns_409(override_get_db) -> None:
     assert second.json()["detail"] == "Brand profile already exists for this content profile."
 
 
-async def test_cross_workspace_brand_access_returns_404(override_get_db) -> None:
+async def test_cross_workspace_brand_access_returns_404(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_a = await _create_workspace(client, "brand-cross-a")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_a))
         workspace_b = await _create_workspace(client, "brand-cross-b")
         profile_id = await _create_profile(client, workspace_a, "creator", "Creator A")
 
@@ -163,6 +173,7 @@ async def test_cross_workspace_brand_access_returns_404(override_get_db) -> None
             json={"positioning": "Workspace A brand"},
         )
 
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_b))
         response = await client.get(
             f"/api/v1/profiles/{profile_id}/brand",
             params={"workspace_id": workspace_b},
@@ -171,12 +182,14 @@ async def test_cross_workspace_brand_access_returns_404(override_get_db) -> None
     assert response.status_code == 404
 
 
-async def test_inaccessible_profile_cannot_create_brand(override_get_db) -> None:
+async def test_inaccessible_profile_cannot_create_brand(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_a = await _create_workspace(client, "brand-create-cross-a")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_a))
         workspace_b = await _create_workspace(client, "brand-create-cross-b")
         profile_id = await _create_profile(client, workspace_a, "business", "Business A")
 
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_b))
         response = await client.post(
             f"/api/v1/profiles/{profile_id}/brand",
             params={"workspace_id": workspace_b},
@@ -186,9 +199,10 @@ async def test_inaccessible_profile_cannot_create_brand(override_get_db) -> None
     assert response.status_code == 404
 
 
-async def test_deleting_content_profile_cascades_to_brand(override_get_db) -> None:
+async def test_deleting_content_profile_cascades_to_brand(override_get_db, db_session) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         workspace_id = await _create_workspace(client, "brand-cascade")
+        await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
         profile_id = await _create_profile(client, workspace_id, "creator", "Cascade Profile")
 
         create_brand = await client.post(

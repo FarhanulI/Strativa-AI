@@ -10,12 +10,14 @@ treated as authorization (see app/authz/dependencies.py for the real,
 Day 21 ownership check).
 """
 
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import structlog
 from redis.asyncio import Redis
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import decode_access_token, encode_access_token
@@ -32,7 +34,8 @@ from app.auth.security import (
     verify_password,
 )
 from app.core.config import settings
-from app.models.workspace_member import WorkspaceMember
+from app.models.workspace import Workspace, WorkspaceOnboardingStatus
+from app.models.workspace_member import WorkspaceMember, WorkspaceRole
 
 logger = structlog.get_logger(__name__)
 
@@ -60,6 +63,20 @@ class InvalidRefreshTokenError(Exception):
 
 class InvalidResetTokenError(Exception):
     pass
+
+
+class EmailAlreadyRegisteredError(Exception):
+    pass
+
+
+def _slug_base(email: str) -> str:
+    """Derives a URL-safe slug fragment from an email's local part -- used
+    only as a human-readable prefix; uniqueness comes from the random
+    suffix appended in `register`, not from this value.
+    """
+    local_part = email.split("@", 1)[0].lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", local_part).strip("-")
+    return slug or "workspace"
 
 
 class AuthService:
@@ -97,6 +114,53 @@ class AuthService:
 
         expires_in = int((exp - now).total_seconds())
         return access_token, raw_refresh_token, expires_in
+
+    async def register(self, email: str, password: str) -> tuple[str, str, int]:
+        """Creates a User, auto-provisions a Workspace with that user as its
+        sole owning WorkspaceMember, sets the new workspace's
+        onboarding_status to NOT_STARTED, and issues a token pair
+        immediately -- see docs/development/day-22.md.
+
+        Duplicate-email rejection is enumeration-resistant the same way
+        Day 20's login is: a pre-check gives a fast, clear rejection for
+        the common case, and an `IntegrityError` from a genuine race
+        (two concurrent registrations for the same email) is normalized
+        into the same `EmailAlreadyRegisteredError` rather than leaking a
+        raw database error.
+        """
+        normalized_email = email.lower()
+        existing = await self.users.get_by_email(normalized_email)
+        if existing is not None:
+            raise EmailAlreadyRegisteredError("An account with this email already exists")
+
+        user = User(email=normalized_email, hashed_password=hash_password(password))
+        workspace = Workspace(
+            name=f"{_slug_base(normalized_email)}'s Workspace",
+            slug=f"{_slug_base(normalized_email)}-{uuid.uuid4().hex[:8]}",
+            onboarding_status=WorkspaceOnboardingStatus.NOT_STARTED,
+        )
+        self.session.add(user)
+        self.session.add(workspace)
+        try:
+            await self.session.flush()
+        except IntegrityError as err:
+            await self.session.rollback()
+            raise EmailAlreadyRegisteredError("An account with this email already exists") from err
+
+        self.session.add(
+            WorkspaceMember(
+                workspace_id=workspace.id,
+                user_id=user.id,
+                role=WorkspaceRole.OWNER,
+            )
+        )
+        try:
+            await self.session.commit()
+        except IntegrityError as err:
+            await self.session.rollback()
+            raise EmailAlreadyRegisteredError("An account with this email already exists") from err
+
+        return await self._issue_token_pair(user)
 
     async def login(self, email: str, password: str) -> tuple[str, str, int]:
         user = await self.users.get_by_email(email)

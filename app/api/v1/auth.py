@@ -12,10 +12,12 @@ from app.auth.schemas import (
     PasswordResetConfirmRequest,
     PasswordResetRequest,
     RefreshRequest,
+    RegisterRequest,
     TokenResponse,
 )
 from app.auth.service import (
     AuthService,
+    EmailAlreadyRegisteredError,
     InvalidCredentialsError,
     InvalidRefreshTokenError,
     InvalidResetTokenError,
@@ -44,6 +46,22 @@ async def get_auth_service(
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> AuthService:
     return AuthService(session, redis)
+
+
+@router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+async def register(
+    payload: RegisterRequest,
+    service: Annotated[AuthService, Depends(get_auth_service)],
+) -> TokenResponse:
+    try:
+        access_token, refresh_token, expires_in = await service.register(
+            payload.email, payload.password
+        )
+    except EmailAlreadyRegisteredError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
+    return TokenResponse(
+        access_token=access_token, refresh_token=refresh_token, expires_in=expires_in
+    )
 
 
 @router.post("/login", response_model=TokenResponse)

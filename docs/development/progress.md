@@ -14,7 +14,18 @@ authentication layer — JWT login/refresh/logout, Redis-based revocation,
 and password reset — and points the Day 15 rate limiter at real
 authenticated identity instead of a client-supplied header. Day 21 (in
 progress) retrofits real ownership-chain enforcement onto those
-authenticated routes, closing the IDOR gap Day 20 explicitly left open:
+authenticated routes, closing the IDOR gap Day 20 explicitly left open.
+Day 22 adds the first signup path (`POST /auth/register`, auto-provisioning
+a Workspace with the caller as its owning member) and a step-wise,
+resumable onboarding flow that progressively builds that workspace's
+first `ContentProfile` across five independently-persisted steps, built
+on Day 20's auth primitives and Day 21's ownership-chain foundations.
+Day 23 connects the system to the outside world for the first time: real
+OAuth 2.0 flows for YouTube, Facebook and Instagram, with an explicit
+destination-selection step so each ContentProfile publishes to a specific
+Page/Channel rather than merely "the connected account," envelope-encrypted
+credential storage, and a scheduled proactive-refresh job. No publish call
+is wired yet (Day 24):
 
 ```text
 Understand
@@ -1016,6 +1027,629 @@ assumed):
 ownership-chain-complete until the remaining work above is closed and
 this section is updated to reflect it.**
 
+## Day 22 - Registration & Onboarding (Step-Wise, Workspace-Anchored)
+
+Adds the system's first signup path and its first end-user-facing
+onboarding flow, built entirely on Day 20's auth primitives and Day 21's
+ownership-chain foundations. Full spec: `docs/development/day-22.md`
+(inline spec supplied for this day; no separate spec file was checked in
+prior to implementation).
+
+**Scope note on Day 21**: this day proceeded without waiting for Day 21's
+remaining work (see that section above) to close, per an explicit
+decision made at the start of this day — the full baseline suite was run
+first and showed 28 pre-existing failures, all in files Day 22 does not
+touch (`test_workspaces.py`, `test_intelligence_analysis.py`,
+`test_published_content.py`, `test_content_intelligence_synthesis.py`).
+Day 22's own Definition of Done language ("full Days 15-21 regression
+suite passes unchanged") is satisfied in the sense that matters: the
+count and identity of failing tests is unchanged by this day's work, not
+in the sense of "zero failures" — that remains Day 21's own outstanding
+scope, not Day 22's.
+
+### Section 1 - Registration
+
+- `POST /api/v1/auth/register` (`app/auth/service.py:AuthService.register`,
+  wired in `app/api/v1/auth.py`): creates a `User` (reusing Day 20's
+  `hash_password`), auto-provisions a `Workspace`
+  (`onboarding_status=NOT_STARTED`), creates the sole `WorkspaceMember`
+  with `role=WorkspaceRole.OWNER` (the existing Day 2 enum value, not a
+  new "owner" role), and issues an access/refresh token pair immediately
+  by calling Day 20's existing `_issue_token_pair` directly rather than
+  reimplementing token issuance.
+- Duplicate-email rejection (409) is enforced both by a pre-check and by
+  catching `IntegrityError` on flush/commit and normalizing it to the
+  same `EmailAlreadyRegisteredError` — closing the race where two
+  concurrent registrations for the same email both pass the pre-check.
+  This does not hide account existence the way login's identical-message
+  behavior does; the Testing section's requirement was "rejected without
+  duplicate records," which this satisfies directly, and a 409 on
+  registration is standard practice (a login attempt, not a registration
+  attempt, is the enumeration-sensitive surface).
+- `/auth/register` is rate-limited via a new
+  `RouteCategory.AUTH_REGISTER` in `app/infrastructure/ratelimit/policy.py`
+  (exact-path match, mirroring `AUTH_LOGIN`), with its own settings
+  (`auth_register_rate_limit_requests_per_window`/`_window_seconds`,
+  both defaulting to 5/60s like login).
+- Auto-provisioned workspace `name`/`slug` are derived from the email's
+  local part plus a random suffix for slug uniqueness
+  (`app/auth/service.py:_slug_base`) — there is no other name to draw
+  from at registration time; the workspace can be renamed later through
+  the existing `PATCH /workspaces/{id}` endpoint.
+
+### Section 2 - Onboarding (step-wise)
+
+- `Workspace.onboarding_status` (`WorkspaceOnboardingStatus`:
+  `NOT_STARTED`/`IN_PROGRESS`/`COMPLETED`, default `NOT_STARTED`) lives on
+  `Workspace`, not `ContentProfile`, specifically so it is checkable
+  before any profile exists — matching the onboarding flow's own `GET`
+  endpoint, which must return a status even for a workspace with no
+  profile yet.
+- New `app/authz/dependencies.py:get_current_workspace` dependency:
+  resolves the caller's workspace from their `WorkspaceMember` row alone
+  (genuine indexed query by `user_id`, matching Day 21's
+  `require_workspace_access` pattern) — no `workspace_id` is accepted
+  from the client anywhere in the onboarding router, not even to verify
+  against, since MVP (Day 20) is one User per one Workspace.
+- New `app/onboarding/` module (`schemas.py`, `service.py`, `router.py`),
+  registered in `app/api/v1/router.py`. `OnboardingService` composes the
+  existing `ContentProfileService`/`ContentProfileRepository` (Days 2/3),
+  `AudienceIntelligenceService`/`PainPointService`/`AudienceQuestionService`
+  (Day 4), and `BrandService` (Day 3) for every write — no duplicate
+  persistence logic was introduced for any of the four domains onboarding
+  touches.
+- Five step endpoints, each an independent `PUT` that persists
+  immediately and sets `onboarding_status=IN_PROGRESS` the first time any
+  step is saved:
+  - `/api/v1/onboarding/identity` — creates `ContentProfile`
+    (`type=creator`) on first call for the workspace, updates in place on
+    resubmission (matched by "the workspace's first/only profile," not a
+    stored id, since Model A permits multiple profiles per workspace in
+    general but this flow only ever manages the first one).
+  - `/api/v1/onboarding/audience` — upserts a single `AudienceIntelligence`
+    row (`summary` for the target-audience description,
+    `psychographics.interests` for interests) and replaces the profile's
+    onboarding-managed `PainPoint`/`AudienceQuestion` rows in full on each
+    call (delete-existing-then-recreate) rather than merging, so
+    resubmission is idempotent without needing per-item identity from the
+    client.
+  - `/api/v1/onboarding/goals` — writes into the existing
+    `ContentProfile.goals` JSON list (Day 2/3's own goal representation,
+    reused directly); constrained to the four spec'd values
+    (`growth`/`authority`/`engagement`/`community`) via a new
+    `OnboardingGoal` enum in `app/onboarding/schemas.py`.
+  - `/api/v1/onboarding/brand` — upserts a single `Brand` row: `tone` maps
+    to `Brand.tone["tone_words"]`, `style`/`things_to_avoid` merge into
+    `Brand.messaging_guidelines` (merged key-by-key against whatever is
+    already stored, so a resubmission that only sends `tone` doesn't wipe
+    a previously-saved `style`).
+  - `/api/v1/onboarding/platforms` — writes a new
+    `ContentProfile.platforms` JSON list column, constrained to the six
+    spec'd platforms via a new `OnboardingPlatform` enum.
+  - Submitting any step other than identity before identity has ever been
+    called raises a 400 (`OnboardingIdentityRequiredError`) rather than a
+    404 or a silent no-op, since there is no ownership-chain mismatch
+    here — the profile simply doesn't exist yet.
+- `GET /api/v1/onboarding` returns `onboarding_status` plus whatever
+  partial identity/audience/goals/brand/platforms data exists (each
+  section `null` until its step has been saved at least once), reading
+  everything fresh through the same service methods the write paths use
+  rather than relying on possibly-stale in-memory relationship
+  collections (the project's session factory runs with
+  `expire_on_commit=False`, so a loaded `AudienceIntelligence.pain_points`
+  collection would not reflect a sibling service call's writes without an
+  explicit re-query).
+- `POST /api/v1/onboarding/complete` checks that every step's required
+  sub-fields are present (identity's positioning/primary_niche/topics/
+  expertise, goals, platforms, audience's target-audience description
+  plus at least one pain point or question, and brand's tone) and returns
+  400 with the specific missing list if not; on success sets
+  `onboarding_status=COMPLETED` and returns the finished `ContentProfile`
+  via the existing `ContentProfileResponse` schema. `BusinessContext` is
+  never touched by any onboarding step, so it stays `null` by simple
+  omission, not by an explicit guard.
+
+### Schema deviations from the original spec (both confirmed with the
+product owner before implementation)
+
+- **`ContentProfile.primary_niche`** (nullable `String(255)`): the spec's
+  identity step asks for a "primary niche" field, but no Day 2/3/16
+  column represents it (`topics`/`expertise`/`goals` are lists, not a
+  single niche statement). Rather than overloading `topics[0]` by
+  convention, this day adds a small, dedicated, additive column.
+- **`ContentProfile.platforms`** (nullable JSON list): the platforms step
+  asks for selected distribution platforms, which has no home anywhere in
+  the existing schema (`ContentProfile`, `Brand`, `AudienceIntelligence`)
+  — this is genuinely new onboarding-only intent data, not a case of
+  reusing an existing sibling structure. Added as a second small,
+  additive column in the same migration.
+
+Both are a deliberate, narrow exception to "no ContentProfile schema
+change beyond what Days 2/3/16 already defined" — that instruction's
+intent (don't duplicate Brand/Audience Intelligence's existing modeling)
+doesn't cover fields with no existing home at all.
+
+### Migration
+
+- `x7y8z9a0b1` (head, down-revision `w6x7y8z9a0`) adds
+  `workspaces.onboarding_status` (enum, default `not_started`),
+  `content_profiles.primary_niche` (nullable string), and
+  `content_profiles.platforms` (nullable JSON/JSONB). Reversible; single
+  head confirmed via `uv run alembic heads`.
+- No unique constraint was added anywhere limiting a `Workspace` to one
+  `ContentProfile` — confirmed by inspection that Day 2/3's model never
+  had one (Model A was already satisfied before this day started).
+
+### Files changed
+
+- New: `app/onboarding/__init__.py`, `app/onboarding/schemas.py`,
+  `app/onboarding/service.py`, `app/onboarding/router.py`,
+  `migrations/versions/x7y8z9a0b1_add_onboarding_status_and_profile_fields.py`,
+  `tests/test_registration.py`, `tests/test_onboarding.py`.
+- Modified: `app/models/workspace.py` (`WorkspaceOnboardingStatus` +
+  column), `app/models/content_profile.py` (`primary_niche`/`platforms`
+  columns), `app/models/__init__.py` (registers the new enum),
+  `app/schemas/content_profile.py` and `app/api/v1/content_profiles.py`
+  (expose the two new fields on the existing CRUD endpoints, since the
+  model gained them), `app/services/content_profile.py` (accepts the two
+  new fields in `create`/`update`), `app/auth/schemas.py`
+  (`RegisterRequest`), `app/auth/service.py` (`register`,
+  `EmailAlreadyRegisteredError`, `_slug_base`), `app/api/v1/auth.py`
+  (`/auth/register` route), `app/authz/dependencies.py`
+  (`get_current_workspace`), `app/infrastructure/ratelimit/policy.py`
+  (`RouteCategory.AUTH_REGISTER`), `app/core/config.py` (register
+  rate-limit settings), `app/api/v1/router.py` (registers the onboarding
+  router).
+
+### Testing
+
+23 new tests: `tests/test_registration.py` (5 — user/workspace/owner
+membership creation, duplicate-email rejection without duplicate
+records, case-insensitive duplicate detection, register-endpoint rate
+limiting, and a freshly-registered workspace reporting `not_started`
+onboarding status) and `tests/test_onboarding.py` (9 — unauthenticated
+rejection, identity step creating a profile and flipping status to
+`in_progress`, out-of-order audience-before-identity rejected with 400,
+resubmitting identity updating in place with no duplicate profile row,
+a full five-step flow through `/complete`, `/complete` rejecting on
+missing required fields, a resumed session seeing prior partial data via
+`GET`, `BusinessContext` confirmed absent (404) after a completed
+onboarding, and cross-user isolation — a second registered user sees a
+fresh `not_started`/empty onboarding state, never the first user's data).
+
+Full-repository regression: `uv run pytest -q` — 282 passed, 28 failed
+(268 pre-existing passing + 14 net new from this day's two test files;
+the 28 failures are byte-identical by test name to the pre-Day-22
+baseline captured at the start of this day — same 28, same files,
+nothing added or removed; see the Day 21 section above). Ruff check and format check clean for every file this day
+touched (verified individually and confirmed the 15 repo-wide `ruff
+check` findings and 25 repo-wide `ruff format --check` findings are all
+in pre-existing files this day never touched). Migration chain validated
+as a single head (`x7y8z9a0b1`) via `uv run alembic heads`; not run
+against a real PostgreSQL instance, matching this project's existing
+SQLite-vs-Postgres testing convention.
+
+### Known limitations carried forward
+
+- The 28 pre-existing Day 21 test failures remain open — this day did
+  not attempt to close them (explicit scope decision; see the note at
+  the top of this section). See the Day 21 section above for the file
+  list and remaining work.
+- `WorkspaceOnboardingStatus`/onboarding fields have not been exercised
+  against a real PostgreSQL instance (same documented convention as
+  every prior day's enum/JSONB additions).
+- Onboarding's audience-step "replace in full" semantics for pain
+  points/questions means any pain point or question added to a profile
+  through the general-purpose Day 4 CRUD APIs
+  (`/personas`, `/pain-points`, `/audience-questions`) during an
+  in-progress onboarding would be silently deleted by the next audience
+  step submission. Not a concern for this day's actual flow (nothing
+  calls those APIs during onboarding), but worth flagging before any
+  future day lets onboarding and direct intelligence editing overlap.
+- No endpoint exists yet to create a workspace's second or later
+  `ContentProfile` (explicitly out of scope for this day per Model A's
+  note); the schema does not block it, but no service/router path
+  creates it.
+
+## Day 23 - Platform Connections: OAuth for YouTube, Facebook & Instagram
+
+Adds real OAuth 2.0 connect/disconnect flows for YouTube, Facebook and
+Instagram, with encrypted credential storage and proactive refresh, and
+gives the Day 9 `SocialPlatformAdapter` contract its first real
+implementations — **connection/authorization surface only**. No publish
+call is wired (Day 24).
+
+### The central design point: one login is not one destination
+
+A person has one Facebook login but may administer several Pages; one
+Google login but may manage several YouTube channels (including Brand
+Account channels); Instagram publishing runs through a Business Account
+linked to a *specific* Page. Because a Workspace can hold several
+`ContentProfile`s (Model A), two profiles in one workspace may
+legitimately need to publish to two **different** Pages/Channels through
+the **same** underlying social login.
+
+The flow therefore has three steps, not two, with an explicit
+destination-selection step between token exchange and persistence:
+
+```text
+1. authorize          -> signed CSRF state + allowlisted authorization URL
+2. callback           -> USER-level token + the list of destinations that
+                         account administers.  PERSISTS NOTHING.
+3. select-destination -> resolve the DESTINATION-scoped token for one
+                         chosen Page/Channel, then persist the connection
+```
+
+Step 2 deliberately stops short of persistence. Collapsing 2 and 3 —
+persisting whichever destination the platform happened to return first —
+is the exact bug this day exists to prevent, and it is the bug a
+single-destination test account would never reveal.
+
+### PlatformConnection model
+
+`app/platform_connections/models.py`, table `platform_connections`:
+`workspace_id`, `profile_id`, `platform` (`youtube`|`facebook`|
+`instagram`), `external_account_id`, `external_account_name`,
+`access_token_encrypted`, `refresh_token_encrypted`, `token_expires_at`,
+`scopes_granted`, `status` (`connected`|`disconnected`|`expired`|
+`revoked`), `connected_at`, `last_refreshed_at`, JSONB `metadata`,
+`created_at`/`updated_at`.
+
+- `external_account_id` is always the **specific destination** — a Page
+  ID, a YouTube Channel ID, or an Instagram Business Account ID — never
+  the top-level user/account id the OAuth login authenticated as.
+- **Unique constraint on `(profile_id, platform)`, NOT
+  `(workspace_id, platform)`** — under Model A two profiles in one
+  workspace each hold their own independent connection. Reconnect
+  replaces that row in place rather than duplicating it.
+- Index on `(status, token_expires_at)` serves the refresh job's due-item
+  query.
+- **Naming deviation from the day spec**: the token columns are
+  `access_token_encrypted`/`refresh_token_encrypted` rather than the
+  spec's bare `access_token`/`refresh_token`. Same fields, same
+  encryption requirement; the suffix makes the at-rest ciphertext
+  obvious at every call site.
+- `__repr__` deliberately excludes every token column, so a repr in a
+  traceback or log line can never carry a credential.
+
+### Per-platform token lifecycle (genuinely not uniform)
+
+This was confirmed per platform rather than assumed identical, and the
+nullable columns reflect real differences:
+
+- **YouTube/Google**: short-lived access token (~1h) plus a long-lived
+  refresh token, returned only when the authorization request carries
+  `access_type=offline&prompt=consent` (both are sent). Google issues
+  **no per-channel credential** — the account token authorizes uploads
+  and the channel choice rides on `external_account_id` alone. So a
+  YouTube row legitimately stores an account-scoped token, recorded
+  explicitly as `connection_metadata.token_scope="account"`.
+- **Facebook/Instagram**: the code exchange yields a short-lived user
+  token, immediately upgraded to a long-lived one (~60 days) via
+  `grant_type=fb_exchange_token`, because Page tokens derived from a
+  long-lived user token **do not expire**. There is no refresh-token
+  grant at all, so `refresh_token_encrypted` and `token_expires_at` are
+  legitimately NULL. The **Page-scoped** token is what gets stored; the
+  user-level token is never persisted to Postgres.
+- Whether a platform issues a destination-scoped credential is a
+  **declared provider property** (`issues_destination_token`), never
+  inferred from whether a token happened to appear in the response — see
+  the review findings below.
+
+### Destination fetching
+
+- **Facebook**: `GET /me/accounts` returns every administered Page with
+  its own Page Access Token in the same response. A Page with no
+  `access_token` is filtered out rather than offered.
+- **Instagram**: the same `/me/accounts` call, requesting the
+  `instagram_business_account` field per Page. A Page with no linked
+  Business Account is excluded entirely — it would look connectable and
+  then fail at publish time. `external_account_id` is the Instagram
+  Business Account ID; the originating Page ID is kept in `metadata`.
+- **YouTube**: `channels.list(mine=true)`, returning every channel the
+  Google account manages, Brand Accounts included.
+- An account with zero publishable destinations gets a 422 with a clear
+  message, and no credential is parked in Redis.
+
+### Pending-connection state (Redis, Day 15 connection)
+
+`app/platform_connections/pending.py` holds the user-level token and
+fetched destination list under a one-time `selection_token`, TTL 600s
+(`oauth_pending_connection_ttl_seconds`). Every token in the blob —
+the user token *and* each per-destination Page token — is
+envelope-encrypted before it reaches Redis; "it's only there for ten
+minutes" was not treated as a reason to hold a live credential in the
+clear. `consume` uses `GETDEL`, so the selection token is genuinely
+single-use and a replay finds nothing. An abandoned OAuth attempt simply
+expires: nothing was written to Postgres, so nothing needs cleaning up.
+
+### Token encryption (envelope, rotation-compatible)
+
+`app/platform_connections/crypto.py`. A fresh 256-bit DEK per encryption
+call AES-256-GCMs the token; the DEK is itself wrapped under a KEK from
+`settings.token_encryption_keys`. Only wrapped DEKs are stored; the KEK
+never touches Postgres or Redis. A bare database column (or Postgres-side
+`pgcrypto`) was rejected deliberately — the key would then travel through
+the database, so a backup or read replica would carry decryptable
+credentials.
+
+Ciphertext format:
+
+```text
+v1.<key_id>.<b64url(wrap_nonce||wrapped_dek)>.<b64url(data_nonce||ciphertext)>
+```
+
+**Key rotation compatibility** (rotation itself out of scope this day):
+`token_encryption_keys` is a keyring (`key_id -> base64 key`), not a
+single key, and every stored blob names the `key_id` that wrapped its
+DEK. A rotation is therefore: add the new key alongside the old and
+repoint `token_encryption_active_key_id` (reads keep working
+immediately, since old blobs resolve their own key id); re-encrypt at
+leisure, or lazily on the next token refresh, which already runs
+decrypt+encrypt; drop the retired key once nothing references it. No
+column, migration, or table rewrite, and no re-encryption inside the
+rotation window. DEKs are per-value and already rotate on every write.
+
+### Endpoints (all Day 21-guarded)
+
+Every route is nested under `/profiles/{profile_id}/...` so Day 21's
+`require_profile_access` applies natively; `workspace_id` remains a query
+parameter validated by `require_workspace_access`, matching the
+established convention of every other profile-scoped router. No route
+trusts a bare client-supplied `workspace_id`/`profile_id`.
+
+```text
+POST   /api/v1/profiles/{profile_id}/platform-connections/{platform}/authorize
+POST   /api/v1/profiles/{profile_id}/platform-connections/{platform}/callback
+POST   /api/v1/profiles/{profile_id}/platform-connections/{platform}/select-destination
+GET    /api/v1/profiles/{profile_id}/platform-connections
+DELETE /api/v1/profiles/{profile_id}/platform-connections/{platform}
+```
+
+No endpoint accepts or returns a token; `PlatformConnectionResponse` has
+no token field at all, so a credential cannot leak by accidental
+omission.
+
+### Security
+
+- **CSRF state** (`state.py`): HMAC-SHA256-signed, expiring, carrying the
+  target `profile_id`. Signed with a dedicated `oauth_state_secret`
+  (falling back to the JWT secret only in development) so a
+  state-signing compromise never implies an access-token-forging one.
+  Every failure mode raises the same message, so probing reveals nothing
+  about which check failed.
+- **Layered re-verification**: a valid signature proves only that *we*
+  issued the state, not who is presenting it. So the state-encoded
+  `profile_id` is cross-checked against the path `profile_id` the caller
+  already passed `require_profile_access` for — at the callback **and
+  again at destination selection**, against the pending state. A forged
+  or replayed state cannot attach a connection to a profile the caller
+  doesn't own.
+- **Redirect URI allowlist**: exact list membership, never a
+  prefix/`startswith` test (which would accept
+  `https://app.example.com.evil.test/` and hand the authorization code
+  to an attacker).
+- **Minimum viable scopes** — YouTube: `youtube.readonly` (needed to
+  enumerate channels at all) + `youtube.upload` (narrowest publish
+  scope, not the broad `youtube`). Facebook: `pages_show_list`,
+  `pages_read_engagement`, `pages_manage_posts`. Instagram:
+  `pages_show_list`, `pages_read_engagement`, `instagram_basic`,
+  `instagram_content_publish`. No ads, insights, messaging or
+  user-profile scopes anywhere.
+- **Config validation**: outside development, `Settings` rejects the
+  built-in development KEK, an unset `oauth_state_secret`, the default
+  localhost redirect allowlist, and any non-`https` redirect entry —
+  mirroring the existing `jwt_secret_key` validator.
+
+### Disconnect
+
+Revokes with the platform where supported, then **hard-deletes** the row
+— never a soft-delete of a live credential. Google supports real
+revocation (`oauth2.googleapis.com/revoke`). Facebook/Instagram
+revocation is **best-effort**: full app de-authorization needs the *user*
+token, which this day deliberately never persists, so `DELETE
+/me/permissions` is attempted with the Page token. The local credential
+is deleted regardless of what the platform answers, including when it is
+unreachable.
+
+### Proactive refresh (Day 15 scheduled job)
+
+`app/platform_connections/refresh.py`, registered as an arq **cron job**
+in `WorkerSettings.cron_jobs` (every 15 minutes, comfortably inside the
+default 1-hour `platform_connection_refresh_threshold_seconds`, so a
+near-expiry token gets several attempts before it can lapse). A cron job
+rather than a queued `execute_ai_job` task type because nothing submits
+it — it is time-driven, not request-driven, with no per-profile job row
+to track. It is not a second scheduler and not an in-process API poller
+like Day 17's `PublishScheduler`.
+
+On failure the connection is marked `status=expired` with the reason in
+its metadata, rather than left looking `connected` to fail opaquely at
+publish time — the "durable, visible failure state" rule from the
+architecture's **AI Execution and Job Control** section. Each connection
+is refreshed and committed independently, so one bad credential cannot
+stop the rest of the batch. Rows with a NULL `token_expires_at` (a
+non-expiring Page token) are excluded from the due query on purpose.
+
+### Platform adapters (Day 9 contract)
+
+`app/platform_connections/adapters.py`: `YouTubeAdapter`,
+`FacebookAdapter`, `InstagramAdapter`, behind a
+`PlatformConnectionAdapter` Protocol that literally extends Day 9's
+`SocialPlatformAdapter`. Implements the connection/authorization surface
+Day 9 anticipated (`authorization_url`, `exchange_code`,
+`list_destinations`, `refresh_token`, `disconnect`, `access_token`).
+`publish` is a typed stub that **raises** — a stub returning a plausible
+success would be worse than one that refuses, because Day 24 would then
+have nothing to notice. `get_adapter` is the uniform lookup Day 24 will
+consume connections through; `access_token` refuses a connection that
+isn't `connected`, so an expired credential fails loudly here rather than
+as an opaque platform 401 later.
+
+### Migration
+
+`y8z9a0b1c2` (head, down-revision `x7y8z9a0b1`) creates
+`platform_connections` with the `(profile_id, platform)` unique
+constraint, the `(status, token_expires_at)` composite index, and
+`workspace_id`/`profile_id` indexes. Reversible (table, 3 indexes and
+both enum types created and dropped symmetrically). Single head confirmed
+via `uv run alembic heads`.
+
+### Review findings found and fixed
+
+An independent architecture/security review ran before testing and
+returned **PASS WITH CHANGES**. One blocking issue and several
+should-fixes were found and fixed in the same pass:
+
+- **BLOCKING — migration enum labels would have broken the feature on
+  PostgreSQL.** `SqlEnum(PyEnum)` persists the member **name**
+  (`'YOUTUBE'`), but the migration created the Postgres types with
+  lowercase `.value` labels (`'youtube'`), plus
+  `server_default="connected"`. Every insert would have raised `invalid
+  input value for enum socialplatform: "YOUTUBE"` on the real database.
+  The SQLite test suite structurally **cannot** catch this — SQLite
+  renders `Enum` as `VARCHAR + CHECK` built from the same model
+  metadata, so both sides agree there and the suite stays green while
+  production is broken. Fixed to uppercase member names, matching the
+  repo's own precedent (`o8p9q0r1s2` uses `"QUEUED"`, `e7f8a9b0c1d2`
+  uses `"DRAFT"`). A new test,
+  `test_migration_enum_labels_match_what_sqlalchemy_binds`, compares the
+  migration's literals against the ORM's actual bind output and was
+  verified to fail against the old lowercase values — closing the blind
+  spot without needing a live Postgres.
+- **Destination-scoping was inferred, not declared.**
+  `destination_scoped = destination.access_token is not None` meant a
+  Facebook/Instagram Page that returned no `access_token` (which
+  `/me/accounts` does whenever the caller's role or granted scopes don't
+  yield one) would silently fall through to persisting the long-lived
+  **user** token while stamping `token_scope="account"` as though
+  intentional — defeating the day's central security property and
+  leaving us holding an app-wide credential covering every Page the
+  person administers. Fixed: `issues_destination_token` is now a
+  declared per-provider property; such Pages are filtered out of
+  `list_destinations`, and `_persist_connection` raises
+  `MissingDestinationTokenError` rather than falling back.
+- **Concurrent selection raised an unhandled `IntegrityError` (500).**
+  Two selections for the same `(profile, platform)` both read "no
+  existing row" and both insert. Now normalized to a 409
+  `ConnectionConflictError`, matching the Day 13 variation-selection
+  precedent.
+- **A 2xx platform response with an unexpected body raised a bare
+  `KeyError` (500)** instead of the module's deliberate 502. Added
+  `require_access_token`, used by both the Google and Facebook token
+  paths.
+- **Config hardening**: the redirect-URI allowlist is now validated
+  outside development (non-default, https-only) alongside the existing
+  KEK/state-secret checks.
+- **Empty destination list** now returns 422 with a clear message
+  instead of parking a live user credential in Redis behind an empty
+  picker.
+
+### Outstanding review items (not acted on, carried forward)
+
+- **Pre-existing, same bug class as the blocking issue above**: Day 22's
+  `x7y8z9a0b1_add_onboarding_status_and_profile_fields.py:25` declares
+  `_ONBOARDING_STATUS_VALUES = ("not_started", "in_progress",
+  "completed")` — lowercase values against a `SqlEnum(PyEnum)` column
+  that binds `NOT_STARTED`. `workspaces.onboarding_status` will reject
+  every write on real PostgreSQL. Not fixed here: it belongs to a
+  landed migration from another day, and amending an already-applied
+  migration is a separate decision. **Should be fixed before any
+  PostgreSQL deployment.** Worth auditing every enum migration in the
+  repo for the same mismatch at the same time.
+- Envelope ciphertext uses no AES-GCM associated data, so a ciphertext
+  is portable between rows — someone with database *write* access could
+  move connection A's encrypted token onto connection B's row and it
+  would decrypt cleanly. Low severity (it presupposes DB write access),
+  cheap to harden later by passing `connection_id`/`platform` as AAD.
+- `raise_for_platform_error` includes up to 300 chars of the platform's
+  response body in its exception message. Contained today — the router
+  returns a generic 502 and the service logs only `type(error).__name__`
+  — but a future caller logging `str(error)` could surface a payload
+  that echoes submitted parameters.
+- The adapter layer (`get_adapter`/`_ADAPTERS`) has no production caller
+  yet; the service talks to `oauth.get_provider` directly. Expected —
+  the adapters exist for Day 24 to consume connections uniformly.
+
+### Testing
+
+46 new tests in `tests/test_platform_connections.py`. Every platform
+fixture returns **more than one** destination (3 Facebook Pages, 3
+YouTube channels including Brand Accounts, 2 Instagram Business
+Accounts), because a single-destination fixture cannot detect "persisted
+the first destination returned" — the precise bug this day exists to
+prevent. All outbound platform HTTP goes through an `httpx.MockTransport`;
+no test reaches the network.
+
+Coverage: state signing/tampering/expiry/cross-profile rejection;
+redirect-URI allowlist rejection including the exact-vs-prefix case;
+callback returning the full multi-destination list for all three
+platforms; Instagram correctly excluding a Page with no linked Business
+Account; callback persisting nothing; selection of an id not in the
+fetched list rejected; **destination-scoped token stored, not the user
+token** (asserted against both the user token and the first-returned
+Page's token); YouTube's account-scoped token recorded deliberately;
+**two profiles in one workspace selecting two different Pages and ending
+up with two independent rows**; reconnect replacing rather than
+duplicating; single-use selection token; ciphertext-at-rest in both
+Postgres and Redis plus non-determinism and key-id carriage; pending
+state expiring from Redis if never finalized; disconnect revoking and
+removing, and still removing when revocation fails; refresh success,
+failure-to-expired, and no-refresh-token-to-expired; the due query
+excluding far-future and NULL-expiry rows; the scheduled job's batch;
+unauthenticated 401; cross-workspace 404 across **both** halves of the
+ownership chain; selection token not redeemable against another profile;
+`__repr__` token safety; and the six review-finding regressions listed
+above.
+
+Verification (all actually executed):
+
+- `uv run pytest tests/test_platform_connections.py -q` -> **46 passed**.
+- `uv run pytest -q` -> **28 failed, 328 passed**. The baseline captured
+  before this day began was **28 failed, 282 passed** — the +46 are
+  exactly this day's tests, and the 28 failures are byte-identical by
+  name to that baseline (`test_workspaces.py`,
+  `test_intelligence_analysis.py`, `test_published_content.py`,
+  `test_content_intelligence_synthesis.py`). **No new regressions.**
+  Those 28 remain Day 21's outstanding scope, not this day's.
+- `uv run ruff check` and `ruff format --check` over all 20 Day 23 files:
+  **clean**. Repo-wide, `ruff check .` reports 15 pre-existing errors and
+  `ruff format --check .` 25 pre-existing files — identical counts to
+  Day 22's record, and **zero** are files this day touched (verified).
+  Not fixed: out of scope.
+- `uv run alembic heads` -> `y8z9a0b1c2 (head)`, single head.
+
+### Known limitations
+
+- **The Definition of Done's end-to-end sandbox verification against a
+  real test account with more than one Page/Channel has NOT been
+  performed.** No Meta or Google sandbox credentials are configured in
+  this environment (`youtube_oauth_client_id`,
+  `facebook_oauth_client_id` etc. are all `None`). Every platform
+  interaction is exercised against a mock transport shaped to the real
+  API responses. This is the one Definition-of-Done item this day does
+  not satisfy, and it is the item specifically intended to catch a
+  wrong-destination bug — it must be completed against a real
+  multi-destination account before this day is considered fully done.
+- The migration has not been run against a real PostgreSQL instance,
+  matching the project's existing SQLite convention. The enum-label test
+  above compensates for the specific failure mode that convention hid,
+  but it is not a substitute for a real migration run.
+- **ACTION FOR THE TEAM — start Meta app review now, in parallel.**
+  `pages_manage_posts`, `instagram_content_publish`,
+  `pages_read_engagement` and `pages_show_list` all require Meta App
+  Review before they work for anyone outside the app's own dev/test
+  users. That review takes real calendar time that is independent of
+  engineering effort and cannot be compressed by finishing the code
+  sooner. It should have been started alongside this day's build, not
+  after it — Day 24's publish wiring will otherwise be blocked waiting
+  on it. YouTube needs its own Google OAuth verification for the
+  `youtube.upload` scope, on a similar footing.
+- Reusing a prior OAuth grant to skip destination selection when
+  connecting a second profile under the same social login is
+  deliberately not implemented — each connect attempt re-runs the full
+  flow. A known, accepted UX trade-off for this day, not a bug.
+
 ## Platform Infrastructure
 
 Reference material for Days 16+ so they can build on this instead of
@@ -1241,16 +1875,18 @@ see the note there):
   transaction ordering instead (see Day 16 above).
 - Retry-on-failure logic for the actual platform publish call, and retracting
   an already-published item.
-- Real OAuth flows and real Facebook, Instagram, TikTok, YouTube, LinkedIn, or
-  X publishing API calls (`SocialPlatformAdapter.publish` remains a
-  manual/no-op placeholder).
+- Real publishing API calls for any platform — Day 23 implements the
+  OAuth connection/authorization surface for YouTube, Facebook and
+  Instagram, but `SocialPlatformAdapter.publish` remains a manual/no-op
+  placeholder and the Day 23 adapters' `publish` is a stub that raises.
+  Wiring connections into the publish flow is Day 24. TikTok, LinkedIn
+  and X have no OAuth implementation at all.
 - Performance metrics ingestion from published content.
 - A learning-alignment scoring factor for `ContentOpportunity` (explicitly
   out of scope for Day 18 — a scoring-formula change, distinct from Day 18's
   rationale-only change).
 - Re-triggering `opportunity_reasoning` when an opportunity's
   `target_objective` changes via `PATCH` (Day 18 only reasons at creation).
-- OAuth and external account connection flows.
 - Image, video, audio, voice, and UGC generation.
 - Full script generation and asset assembly.
 - Remix and content transformation engines.
@@ -1323,7 +1959,18 @@ scoped strictly to authenticating an existing user against an existing
 workspace (no signup), and repoints the Day 15 rate limiter at that real
 identity instead of a client-supplied header. Day 20 explicitly does not
 retrofit ownership-chain enforcement onto Days 15-19 (see its "KNOWN
-CRITICAL GAP" note); that retrofit is Day 21. No real social platform API
-integrations, OAuth flows, advanced media generation, autonomous strategy
-features, learning-alignment scoring, or draft editing/publishing changes
-were added.
+CRITICAL GAP" note); that retrofit is Day 21. Day 22 adds the first signup
+path and a step-wise, resumable onboarding flow. Day 23 adds the system's
+first real external-platform integration: OAuth 2.0 connect/disconnect for
+YouTube, Facebook and Instagram, built around the rule that one OAuth login
+is not one publishable destination — a mandatory destination-selection step
+sits between token exchange and persistence, so two ContentProfiles in the
+same workspace can hold independent connections to different Pages/Channels
+through the same social login. Credentials are envelope-encrypted at rest in
+both Postgres and the short-TTL Redis pending state, a scheduled job
+refreshes near-expiry tokens and marks failures `expired` rather than
+failing silently at publish time, and the Day 9 adapter contract gains real
+YouTube/Facebook/Instagram implementations of its connection/authorization
+surface only. No publish call is wired (Day 24), no TikTok/LinkedIn/X, and
+no advanced media generation, autonomous strategy features,
+learning-alignment scoring, or draft editing changes were added.

@@ -1,3 +1,4 @@
+from arq import cron
 from arq.connections import RedisSettings
 
 import app.content_intelligence.service  # noqa: F401
@@ -5,6 +6,7 @@ import app.services.intelligence_analysis  # noqa: F401
 import app.services.opportunity_reasoning  # noqa: F401
 from app.core.config import settings
 from app.infrastructure.jobs.worker_tasks import execute_ai_job
+from app.platform_connections.refresh import refresh_platform_connections_cron
 
 # Importing app.services.intelligence_analysis registers the brand/audience/
 # market analysis job handlers, app.content_intelligence.service registers
@@ -32,3 +34,13 @@ class WorkerSettings:
 
     redis_settings = get_redis_settings()
     functions: list = [execute_ai_job]
+
+    # Day 23: proactive platform-token refresh. A cron job rather than a
+    # queued `execute_ai_job` task type because nothing submits it -- it is
+    # time-driven, not request-driven, and has no per-profile job row to
+    # track. Every 15 minutes, comfortably inside the default 1-hour
+    # `platform_connection_refresh_threshold_seconds`, so a near-expiry
+    # token gets several refresh attempts before it can actually lapse.
+    cron_jobs: list = [
+        cron(refresh_platform_connections_cron, minute={0, 15, 30, 45}, run_at_startup=False)
+    ]

@@ -907,6 +907,39 @@ External platform integrations should not leak platform-specific models into the
 
 The internal system should operate on normalized content and performance data.
 
+**Implementation status (Day 23):** the first real `Platform Adapter`
+implementations now exist for YouTube, Facebook, and Instagram
+(`app/platform_connections/adapters.py`), implementing this section's
+connection/authorization surface — OAuth connect, token refresh, and
+disconnect — behind the same `SocialPlatformAdapter` contract Day 9
+defined. `publish`/`fetch_posts`/`fetch_post`/`fetch_metrics` remain typed
+stubs that raise; wiring a real publish call through these adapters is Day
+24. TikTok, LinkedIn, and X have no OAuth implementation yet.
+
+A `PlatformConnection` model (one row per `ContentProfile` per platform,
+never per `Workspace`) records the credential a profile actually
+publishes with. This makes explicit a distinction the architecture had
+not previously needed to state: **one OAuth login is not one publishable
+destination.** A person has one Facebook login but may administer several
+Pages; one Google login but may manage several YouTube channels
+(including Brand Account channels); Instagram publishing runs through a
+Business Account reachable only via a linked Facebook Page. Because
+`ContentProfile` is the universal strategic root and a `Workspace` may
+hold several of them, two profiles under the same workspace — and the
+same underlying social login — may legitimately need to publish to two
+different Pages/Channels. The connect flow therefore has an explicit
+destination-selection step between token exchange and persistence, and
+never assumes the first (or only) destination an API returns is the
+intended one.
+
+Stored credentials are envelope-encrypted at rest (application-level, not
+a bare database column), for both the final connection and the short-TTL
+pending state held between token exchange and destination selection. A
+scheduled job proactively refreshes a token before it expires and marks
+a connection `expired` on failure — the "durable, visible failure state,"
+never a silent one, that **AI Execution and Job Control** already
+requires of AI work applies equally here to platform credentials.
+
 ---
 
 # Creator Example
@@ -1403,7 +1436,10 @@ Adds:
 
 Adds:
 
-* social platform adapters and ingestion jobs
+* social platform adapters and ingestion jobs — **connection/authorization
+  surface implemented for YouTube, Facebook, and Instagram (Day 23)**;
+  publish/ingestion calls through these adapters, and adapters for
+  TikTok/LinkedIn/X, remain outstanding
 * publishing and scheduling
 * durable performance synchronization and content→performance attribution
 * model/provider fallback policies
@@ -1412,7 +1448,7 @@ Adds:
 * load and concurrency testing
 * tenant-level usage isolation and billing enforcement
 
-Until the full loop — connected accounts, publishing, measurement, and automated learning — is operational, the system is a strategy and intelligence workspace rather than a complete Content Operating System.
+Until the full loop — connected accounts, publishing, measurement, and automated learning — is operational, the system is a strategy and intelligence workspace rather than a complete Content Operating System. **Connected accounts** now has a first real implementation (Day 23: OAuth connect/disconnect and destination selection for YouTube, Facebook, and Instagram); publishing through those connections, measurement, and automated learning from real platform data remain outstanding.
 
 The ordering principle: **security and platform reliability precede additional creative-generation capability.**
 

@@ -32,11 +32,14 @@ from app.api.v1.published_content import router as published_content_router
 from app.api.v1.services import router as services_router
 from app.api.v1.topics import router as topics_router
 from app.api.v1.workspaces import router as workspaces_router
+from app.onboarding.router import router as onboarding_router
+from app.platform_connections.router import router as platform_connections_router
 
 api_router = APIRouter()
 api_router.include_router(health_router)
 api_router.include_router(auth_router)
 api_router.include_router(workspaces_router)
+api_router.include_router(onboarding_router)
 api_router.include_router(content_profiles_router)
 api_router.include_router(content_opportunities_router)
 api_router.include_router(content_briefs_router)
@@ -45,6 +48,7 @@ api_router.include_router(content_draft_variations_router)
 api_router.include_router(content_evaluations_router)
 api_router.include_router(content_library_router)
 api_router.include_router(published_content_router)
+api_router.include_router(platform_connections_router)
 api_router.include_router(audience_intelligence_router)
 api_router.include_router(personas_router)
 api_router.include_router(pain_points_router)

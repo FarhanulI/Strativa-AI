@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import AuthenticatedUser, get_current_user
 from app.core.database import get_db_session
 from app.models.content_profile import ContentProfile
+from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember
 
 _WORKSPACE_NOT_FOUND = HTTPException(
@@ -62,6 +63,33 @@ async def require_workspace_access(
     if member is None:
         raise _WORKSPACE_NOT_FOUND
     return member
+
+
+async def get_current_workspace(
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> Workspace:
+    """Resolve the authenticated caller's workspace from their
+    `WorkspaceMember` row -- no `workspace_id` is ever accepted from the
+    client (Day 22: onboarding never lets the client specify which
+    workspace it means, unlike `require_workspace_access`).
+
+    MVP: one User maps to exactly one Workspace (see
+    docs/development/day-20.md), so the first membership match is the
+    caller's workspace. A genuine, indexed lookup by `user_id` -- not a
+    shortcut -- matching Day 21's own pattern.
+    """
+    result = await session.execute(
+        select(WorkspaceMember).where(WorkspaceMember.user_id == UUID(current_user.id))
+    )
+    member = result.scalars().first()
+    if member is None:
+        raise _WORKSPACE_NOT_FOUND
+
+    workspace = await session.get(Workspace, member.workspace_id)
+    if workspace is None:
+        raise _WORKSPACE_NOT_FOUND
+    return workspace
 
 
 async def require_profile_access(

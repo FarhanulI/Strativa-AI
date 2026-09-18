@@ -56,8 +56,13 @@ from app.models.product import Product
 from app.models.published_content import PublishedContent, PublishMethod, PublishStatus
 from app.models.service import Service
 from app.models.topic import Topic
-from app.models.workspace import Workspace
+from app.models.workspace import Workspace, WorkspaceOnboardingStatus
 from app.models.workspace_member import WorkspaceMember, WorkspaceRole
+from app.platform_connections.models import (
+    ConnectionStatus,
+    PlatformConnection,
+    SocialPlatform,
+)
 
 __all__ = [
     "AIJob",
@@ -110,6 +115,9 @@ __all__ = [
     "PainPoint",
     "Persona",
     "Product",
+    "ConnectionStatus",
+    "PlatformConnection",
+    "SocialPlatform",
     "PublishedContent",
     "PublishMethod",
     "PublishStatus",
@@ -117,5 +125,6 @@ __all__ = [
     "Topic",
     "Workspace",
     "WorkspaceMember",
+    "WorkspaceOnboardingStatus",
     "WorkspaceRole",
 ]

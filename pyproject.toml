@@ -9,9 +9,14 @@ dependencies = [
     "argon2-cffi>=25.1.0",
     "arq>=0.26.1",
     "asyncpg>=0.29.0",
+    # Day 23: envelope encryption (AES-256-GCM) for stored OAuth credentials.
+    "cryptography>=43.0.0",
     "email-validator>=2.3.0",
     "fastapi>=0.115.0",
     "google-genai>=1.0.0",
+    # Day 23: outbound HTTP to platform OAuth/Graph endpoints. Previously a
+    # dev-only dependency (test client); now imported by application code.
+    "httpx>=0.27.2",
     "pgvector>=0.3.5",
     "pydantic-settings>=2.5.2",
     "pyjwt>=2.13.0",

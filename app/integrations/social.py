@@ -3,6 +3,16 @@ from typing import Any, Protocol
 
 
 class SocialPlatformAdapter(Protocol):
+    """Day 9's content/metrics contract, unchanged.
+
+    Day 23 implements the *connection/authorization* half Day 9 anticipated
+    (`connect()`, `refresh_token()`, `disconnect()`, `fetch_profile()`) as
+    `app.platform_connections.adapters.PlatformConnectionAdapter`, with real
+    YouTube/Facebook/Instagram implementations. That Protocol extends this
+    one rather than replacing it, so this contract stays the single
+    definition of the content/metrics surface.
+    """
+
     async def fetch_posts(self) -> list[dict[str, Any]]: ...
     async def fetch_post(self, external_post_id: str) -> dict[str, Any]: ...
     async def fetch_metrics(self, external_post_id: str) -> dict[str, Any]: ...

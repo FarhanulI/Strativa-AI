@@ -37,9 +37,11 @@ async def create_content_profile(
         website=payload.website,
         location=payload.location,
         positioning=payload.positioning,
+        primary_niche=payload.primary_niche,
         topics=payload.topics,
         expertise=payload.expertise,
         goals=payload.goals,
+        platforms=payload.platforms,
     )
     return ContentProfileResponse.model_validate(profile)
 
@@ -79,9 +81,11 @@ async def update_content_profile(
         website=payload.website,
         location=payload.location,
         positioning=payload.positioning,
+        primary_niche=payload.primary_niche,
         topics=payload.topics,
         expertise=payload.expertise,
         goals=payload.goals,
+        platforms=payload.platforms,
     )
     if not updated:
         raise HTTPException(

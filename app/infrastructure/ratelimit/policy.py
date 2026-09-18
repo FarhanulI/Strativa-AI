@@ -16,6 +16,7 @@ class RouteCategory(StrEnum):
     CRUD = "crud"
     AI_TRIGGERING = "ai_triggering"
     AUTH_LOGIN = "auth_login"
+    AUTH_REGISTER = "auth_register"
 
 
 @dataclass(frozen=True)
@@ -28,11 +29,15 @@ class RateLimitRule:
 # credential-stuffing resistance only needs to apply to the login
 # endpoint itself, not everything under /auth.
 _AUTH_LOGIN_PATH_SUFFIX = "/auth/login"
+_AUTH_REGISTER_PATH_SUFFIX = "/auth/register"
 
 
 def classify_route(path: str) -> RouteCategory:
-    if path.rstrip("/").endswith(_AUTH_LOGIN_PATH_SUFFIX):
+    stripped = path.rstrip("/")
+    if stripped.endswith(_AUTH_LOGIN_PATH_SUFFIX):
         return RouteCategory.AUTH_LOGIN
+    if stripped.endswith(_AUTH_REGISTER_PATH_SUFFIX):
+        return RouteCategory.AUTH_REGISTER
     for prefix in settings.ai_triggering_route_prefixes:
         if prefix in path:
             return RouteCategory.AI_TRIGGERING
@@ -49,6 +54,11 @@ def rule_for_category(category: RouteCategory) -> RateLimitRule:
         return RateLimitRule(
             max_requests=settings.auth_login_rate_limit_requests_per_window,
             window_seconds=settings.auth_login_rate_limit_window_seconds,
+        )
+    if category is RouteCategory.AUTH_REGISTER:
+        return RateLimitRule(
+            max_requests=settings.auth_register_rate_limit_requests_per_window,
+            window_seconds=settings.auth_register_rate_limit_window_seconds,
         )
     return RateLimitRule(
         max_requests=settings.rate_limit_crud_requests_per_window,

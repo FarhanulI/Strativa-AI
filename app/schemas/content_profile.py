@@ -17,9 +17,11 @@ class ContentProfileCreate(BaseModel):
     website: str | None = Field(None, max_length=2048)
     location: str | None = Field(None, max_length=255)
     positioning: str | None = None
+    primary_niche: str | None = Field(None, max_length=255)
     topics: list[str] | None = None
     expertise: list[str] | None = None
     goals: list[str] | None = None
+    platforms: list[str] | None = None
 
 
 class ContentProfileUpdate(BaseModel):
@@ -29,9 +31,11 @@ class ContentProfileUpdate(BaseModel):
     website: str | None = Field(None, max_length=2048)
     location: str | None = Field(None, max_length=255)
     positioning: str | None = None
+    primary_niche: str | None = Field(None, max_length=255)
     topics: list[str] | None = None
     expertise: list[str] | None = None
     goals: list[str] | None = None
+    platforms: list[str] | None = None
 
 
 class ContentProfileResponse(BaseModel):
@@ -45,8 +49,10 @@ class ContentProfileResponse(BaseModel):
     website: str | None
     location: str | None
     positioning: str | None
+    primary_niche: str | None
     topics: list[str] | None
     expertise: list[str] | None
     goals: list[str] | None
+    platforms: list[str] | None
     created_at: datetime
     updated_at: datetime

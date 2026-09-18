@@ -43,11 +43,13 @@ class ContentProfile(Base):
     website: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     location: Mapped[str | None] = mapped_column(String(255), nullable=True)
     positioning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    primary_niche: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     json_type = JSON().with_variant(JSONB, "postgresql")
     topics: Mapped[list[Any] | None] = mapped_column(json_type, nullable=True)
     expertise: Mapped[list[Any] | None] = mapped_column(json_type, nullable=True)
     goals: Mapped[list[Any] | None] = mapped_column(json_type, nullable=True)
+    platforms: Mapped[list[Any] | None] = mapped_column(json_type, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         default=lambda: datetime.now(UTC), server_default=func.now()

@@ -1,23 +1,14 @@
 # Execute Development Day
 
-## Usage
-
-`/backend-day <day-number>`
-
-Example: `/backend-day 13`
-
 ## Instructions
 
-Execute the specified development day from the project's existing development specifications.
+Execute the specified development day from the prompt.
 
 Before making changes, read:
 
 1. `CLAUDE.md`
-2. `docs/architecture/product-architecture.md`
-3. `docs/development/progress.md` (if it exists)
-4. `docs/development/days/day-$ARGUMENTS.md`
-
-Replace `XX` with the requested day number.
+2. `docs/product/product-architecture.md`
+3. `docs/development/progress.md`
 
 Then inspect the actual current implementation and determine the delta between:
 
@@ -53,7 +44,7 @@ If the requested day conflicts materially with the architecture or existing impl
 
 ## Review (after implementation, before testing)
 
-Using the `backend-reviewer` agent, review the implementation against `docs/architecture/product-architecture.md` and the day's spec. This is review-only — no fixes applied during this step.
+Using the `backend-reviewer` agent, review the implementation against `docs/product/product-architecture.md` and the day's spec. This is review-only — no fixes applied during this step.
 
 Do not re-read `CLAUDE.md`, the architecture doc, `progress.md`, or the day spec — they are already loaded from the steps above.
 

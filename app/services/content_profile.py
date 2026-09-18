@@ -20,9 +20,11 @@ class ContentProfileService:
         website: str | None = None,
         location: str | None = None,
         positioning: str | None = None,
+        primary_niche: str | None = None,
         topics: list[str] | None = None,
         expertise: list[str] | None = None,
         goals: list[str] | None = None,
+        platforms: list[str] | None = None,
     ) -> ContentProfile:
         validated_type = self._validate_type(type)
         profile = ContentProfile(
@@ -33,9 +35,11 @@ class ContentProfileService:
             website=website,
             location=location,
             positioning=positioning,
+            primary_niche=primary_niche,
             topics=topics,
             expertise=expertise,
             goals=goals,
+            platforms=platforms,
         )
         await self.repository.create(profile)
         await self.session.commit()
@@ -61,9 +65,11 @@ class ContentProfileService:
         website: str | None = None,
         location: str | None = None,
         positioning: str | None = None,
+        primary_niche: str | None = None,
         topics: list[str] | None = None,
         expertise: list[str] | None = None,
         goals: list[str] | None = None,
+        platforms: list[str] | None = None,
     ) -> ContentProfile | None:
         profile = await self.repository.get_by_id(profile_id, workspace_id)
         if not profile:
@@ -81,12 +87,16 @@ class ContentProfileService:
             profile.location = location
         if positioning is not None:
             profile.positioning = positioning
+        if primary_niche is not None:
+            profile.primary_niche = primary_niche
         if topics is not None:
             profile.topics = topics
         if expertise is not None:
             profile.expertise = expertise
         if goals is not None:
             profile.goals = goals
+        if platforms is not None:
+            profile.platforms = platforms
 
         await self.repository.update(profile)
         await self.session.commit()

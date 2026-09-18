@@ -8,6 +8,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # `environment == "development"`.
 _INSECURE_DEFAULT_JWT_SECRET_KEY = "insecure-dev-secret-change-in-production"
 
+# Development-only placeholder KEK (32 zero-ish bytes, urlsafe-base64). Like
+# the JWT secret above, `Settings` rejects it outside
+# `environment == "development"` -- a real deployment supplies the keyring
+# from its secrets manager. See app/platform_connections/crypto.py.
+_INSECURE_DEFAULT_TOKEN_ENCRYPTION_KEY = "aW5zZWN1cmUtZGV2ZWxvcG1lbnQta2VrLTMyYnl0ZXM"
+
+# Development-only OAuth redirect target; `Settings` rejects this exact
+# default outside development, like the two secrets above.
+_DEFAULT_OAUTH_REDIRECT_URI_ALLOWLIST = ["http://localhost:3000/oauth/callback"]
+
 
 class Settings(BaseSettings):
     app_name: str = "AI Content Studio API"
@@ -105,11 +115,109 @@ class Settings(BaseSettings):
     auth_login_rate_limit_requests_per_window: int = 5
     auth_login_rate_limit_window_seconds: int = 60
 
+    # Register-endpoint rate limiting -- same tight-ceiling rationale as
+    # login, applied by exact-path match against `/auth/register`, to
+    # resist automated mass-account creation.
+    auth_register_rate_limit_requests_per_window: int = 5
+    auth_register_rate_limit_window_seconds: int = 60
+
+    # --- Platform connections (app/platform_connections) -- Day 23 ---
+
+    # Envelope encryption keyring for stored OAuth credentials: a mapping of
+    # `key_id -> urlsafe-base64 32-byte key`, supplied by the deployment's
+    # secrets manager. A keyring rather than a single key specifically so a
+    # future rotation can add a new key, repoint
+    # `token_encryption_active_key_id`, and keep decrypting existing blobs
+    # (each blob names its own key id) -- see app/platform_connections/crypto.py.
+    token_encryption_keys: dict[str, str] = Field(
+        default_factory=lambda: {"v1": _INSECURE_DEFAULT_TOKEN_ENCRYPTION_KEY}
+    )
+    token_encryption_active_key_id: str = "v1"
+
+    # Signing secret for the OAuth CSRF `state` parameter. Separate from
+    # `jwt_secret_key` so a state-signing compromise never implies an
+    # access-token-forging compromise; falls back to the JWT secret only in
+    # development, and is validated below outside it.
+    oauth_state_secret: str | None = None
+    oauth_state_ttl_seconds: int = 600
+
+    # Redirect URIs an OAuth `authorize` call may ask the provider to send
+    # the user back to. Exact-match allowlist -- never a prefix/substring
+    # match, which is how open redirects get introduced.
+    oauth_redirect_uri_allowlist: list[str] = Field(
+        default_factory=lambda: list(_DEFAULT_OAUTH_REDIRECT_URI_ALLOWLIST)
+    )
+
+    # Pending (post-token-exchange, pre-destination-selection) connection
+    # state lives in Redis only this long. An abandoned OAuth attempt simply
+    # expires rather than leaving a dangling credential anywhere.
+    oauth_pending_connection_ttl_seconds: int = 600
+
+    # Per-platform OAuth client credentials.
+    youtube_oauth_client_id: str | None = None
+    youtube_oauth_client_secret: str | None = None
+    facebook_oauth_client_id: str | None = None
+    facebook_oauth_client_secret: str | None = None
+    facebook_graph_api_version: str = "v21.0"
+
+    # Proactive refresh (app/platform_connections/refresh.py, run as an arq
+    # cron job). A connection is "due" once its access token expires within
+    # this window; the cron cadence must stay well under it so a token is
+    # seen as due several times before it actually lapses.
+    platform_connection_refresh_threshold_seconds: int = 3600
+    platform_connection_refresh_batch_size: int = 100
+
+    # Outbound HTTP to platform OAuth/Graph endpoints.
+    platform_http_timeout_seconds: float = 10.0
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
     )
+
+    @property
+    def resolved_oauth_state_secret(self) -> str:
+        """The secret the OAuth `state` HMAC is keyed with.
+
+        Falls back to `jwt_secret_key` only in development, where that value
+        is itself the known-insecure placeholder; the validator below
+        requires a real, distinct secret everywhere else.
+        """
+        return self.oauth_state_secret or self.jwt_secret_key
+
+    @model_validator(mode="after")
+    def _validate_platform_connection_secrets(self) -> "Settings":
+        if self.environment == "development":
+            return self
+
+        if _INSECURE_DEFAULT_TOKEN_ENCRYPTION_KEY in self.token_encryption_keys.values():
+            raise ValueError(
+                "token_encryption_keys must be supplied from a secrets manager outside "
+                "development (the built-in development key cannot encrypt real credentials)"
+            )
+        if self.token_encryption_active_key_id not in self.token_encryption_keys:
+            raise ValueError(
+                "token_encryption_active_key_id must name a key present in token_encryption_keys"
+            )
+        if not self.oauth_state_secret:
+            raise ValueError(
+                "oauth_state_secret must be set via environment/.env outside development"
+            )
+        # Fails closed rather than open if unset (connections just break),
+        # but shipping the localhost default to production is an avoidable
+        # surprise, and an http:// redirect would expose the authorization
+        # code in transit.
+        if self.oauth_redirect_uri_allowlist == _DEFAULT_OAUTH_REDIRECT_URI_ALLOWLIST:
+            raise ValueError(
+                "oauth_redirect_uri_allowlist must be set via environment/.env outside "
+                "development (the localhost default is not a real redirect target)"
+            )
+        if any(not uri.startswith("https://") for uri in self.oauth_redirect_uri_allowlist):
+            raise ValueError(
+                "every oauth_redirect_uri_allowlist entry must use https outside development"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_jwt_secret(self) -> "Settings":

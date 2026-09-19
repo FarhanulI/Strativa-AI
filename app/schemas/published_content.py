@@ -26,6 +26,7 @@ class PublishedContentResponse(BaseModel):
     profile_id: UUID
     platform: str
     external_url: str | None
+    platform_post_id: str | None
     scheduled_at: datetime | None
     published_at: datetime | None
     publish_method: PublishMethod

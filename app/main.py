@@ -1,6 +1,3 @@
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -8,17 +5,13 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.logging import RequestIdMiddleware, configure_logging
 from app.infrastructure.ratelimit import RateLimitMiddleware
-from app.services.publish_scheduler import PublishScheduler
 
-publish_scheduler = PublishScheduler(poll_interval_seconds=settings.publish_scheduler_poll_seconds)
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-    if settings.publish_scheduler_enabled:
-        publish_scheduler.start()
-    yield
-    await publish_scheduler.stop()
+# Due-publish promotion runs as a Day 15 registered arq periodic job
+# (`app.services.publish_promotion`, registered in
+# `app.workers.settings.WorkerSettings.cron_jobs`), executed by the
+# separate `uv run arq app.workers.settings.WorkerSettings` process -- never
+# as a FastAPI startup-event asyncio task here. See
+# `app/services/publish_promotion.py` for why that distinction matters.
 
 
 def create_app() -> FastAPI:
@@ -30,7 +23,6 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
-        lifespan=lifespan,
     )
 
     app.add_middleware(RequestIdMiddleware)

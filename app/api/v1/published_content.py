@@ -18,6 +18,7 @@ from app.schemas.published_content import (
 from app.services.published_content import (
     DraftNotEligibleError,
     InvalidScheduleError,
+    PlatformNotConnectedError,
     PublishedContentService,
     ScheduleNotCancellableError,
 )
@@ -34,7 +35,7 @@ async def get_published_content_service(
 def error_response(error: ValueError) -> HTTPException:
     if isinstance(error, DraftNotEligibleError | ScheduleNotCancellableError):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
-    if isinstance(error, InvalidScheduleError):
+    if isinstance(error, InvalidScheduleError | PlatformNotConnectedError):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error))
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
 

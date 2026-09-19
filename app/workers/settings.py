@@ -2,19 +2,25 @@ from arq import cron
 from arq.connections import RedisSettings
 
 import app.content_intelligence.service  # noqa: F401
+import app.services.content_performance  # noqa: F401
 import app.services.intelligence_analysis  # noqa: F401
 import app.services.opportunity_reasoning  # noqa: F401
 from app.core.config import settings
 from app.infrastructure.jobs.worker_tasks import execute_ai_job
 from app.platform_connections.refresh import refresh_platform_connections_cron
+from app.services.publish_promotion import (
+    promote_due_publishes_cron,
+    recover_stuck_publishes_cron,
+)
 
 # Importing app.services.intelligence_analysis registers the brand/audience/
 # market analysis job handlers, app.content_intelligence.service registers
-# the strategic_synthesis handler, and app.services.opportunity_reasoning
-# registers the opportunity_reasoning handler (see the bottom of each
-# module) — the worker process never imports the API router, so these
-# imports are the only thing that makes those task_types resolvable via
-# get_handler() here.
+# the strategic_synthesis handler, app.services.opportunity_reasoning
+# registers the opportunity_reasoning handler, and app.services.
+# content_performance registers the Day 25 performance_analysis handler
+# (see the bottom of each module) — the worker process never imports the
+# API router, so these imports are the only thing that makes those
+# task_types resolvable via get_handler() here.
 
 
 def get_redis_settings() -> RedisSettings:
@@ -41,6 +47,22 @@ class WorkerSettings:
     # track. Every 15 minutes, comfortably inside the default 1-hour
     # `platform_connection_refresh_threshold_seconds`, so a near-expiry
     # token gets several refresh attempts before it can actually lapse.
+    #
+    # Day 24: due-publish promotion and stuck-row recovery, both registered
+    # here rather than as a FastAPI startup-event asyncio task (see
+    # app/services/publish_promotion.py). arq cron fires on fixed
+    # second/minute marks, not an arbitrary interval, so the configured
+    # intervals are expanded into the marks that approximate them.
     cron_jobs: list = [
-        cron(refresh_platform_connections_cron, minute={0, 15, 30, 45}, run_at_startup=False)
+        cron(refresh_platform_connections_cron, minute={0, 15, 30, 45}, run_at_startup=False),
+        cron(
+            promote_due_publishes_cron,
+            second=set(range(0, 60, settings.publish_promotion_interval_seconds)),
+            run_at_startup=False,
+        ),
+        cron(
+            recover_stuck_publishes_cron,
+            minute=set(range(0, 60, settings.publish_stuck_recovery_interval_minutes)),
+            run_at_startup=False,
+        ),
     ]

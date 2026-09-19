@@ -1,19 +1,30 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import httpx
+import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.main import app
-from app.models.published_content import PublishStatus
+from app.models.content_draft import ContentDraft
+from app.models.published_content import PublishedContent, PublishStatus
+from app.platform_connections import adapters as adapters_module
+from app.platform_connections.crypto import encrypt_token
+from app.platform_connections.models import ConnectionStatus, PlatformConnection, SocialPlatform
 from app.services.published_content import PublishedContentService
+from tests.conftest import authenticate_as_workspace_owner
 from tests.test_content_briefs import create_profile, create_workspace
 from tests.test_content_drafts import create_ready_brief
 from tests.test_content_library import create_ready_draft
 
 
 async def create_approved_draft(
-    client: AsyncClient, workspace_id: str, profile_id: str, brief_id: str, title: str
+    client: AsyncClient,
+    workspace_id: str,
+    profile_id: str,
+    brief_id: str,
+    title: str,
 ) -> dict:
     draft = await create_ready_draft(
         client,
@@ -39,11 +50,84 @@ async def create_approved_draft(
     return approved.json()
 
 
+async def create_approved_draft_on_platform(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    workspace_id: str,
+    profile_id: str,
+    brief_id: str,
+    title: str,
+    platform: str,
+) -> dict:
+    """A draft whose `platform` matches a real (Day 23) connection-required
+    platform. Drafts inherit `platform` from their brief's
+    `recommended_platform` (which defaults to "other" -- see
+    `app.services.brief.composer`), so it's overwritten directly for tests
+    that need a specific connection-required platform.
+    """
+    draft = await create_approved_draft(client, workspace_id, profile_id, brief_id, title)
+    result = await db_session.get(ContentDraft, uuid.UUID(draft["id"]))
+    result.platform = platform
+    await db_session.commit()
+    await db_session.refresh(result)
+    draft["platform"] = platform
+    return draft
+
+
+async def seed_connection(
+    db_session: AsyncSession,
+    *,
+    workspace_id: str,
+    profile_id: str,
+    platform: SocialPlatform,
+    status: ConnectionStatus = ConnectionStatus.CONNECTED,
+    external_account_id: str = "destination-1",
+) -> PlatformConnection:
+    connection = PlatformConnection(
+        workspace_id=uuid.UUID(workspace_id),
+        profile_id=uuid.UUID(profile_id),
+        platform=platform,
+        external_account_id=external_account_id,
+        external_account_name="Test destination",
+        access_token_encrypted=encrypt_token("STORED-ACCESS-TOKEN"),
+        status=status,
+    )
+    db_session.add(connection)
+    await db_session.commit()
+    await db_session.refresh(connection)
+    return connection
+
+
+def fake_facebook_client(*, post_id: str = "PAGE_123_POST_456", status_code: int = 200):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/feed")
+        if status_code != 200:
+            return httpx.Response(status_code, text="platform rejected the request")
+        return httpx.Response(200, json={"id": post_id})
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+@pytest.fixture(autouse=True)
+def _no_real_publish_network(monkeypatch: pytest.MonkeyPatch):
+    """Every test in this file that reaches a real adapter gets a client
+    that never touches the network by default; tests exercising the
+    Facebook success/failure path override this per-test.
+    """
+    monkeypatch.setattr(adapters_module, "build_http_client", fake_facebook_client)
+
+
+async def authed_workspace(client: AsyncClient, db_session: AsyncSession, slug: str) -> str:
+    workspace_id = await create_workspace(client, slug)
+    await authenticate_as_workspace_owner(client, db_session, uuid.UUID(workspace_id))
+    return workspace_id
+
+
 async def test_publish_approved_draft_creates_record_without_mutating_draft(
-    override_get_db,
+    override_get_db, db_session: AsyncSession
 ) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        workspace_id = await create_workspace(client, "publish-approved")
+        workspace_id = await authed_workspace(client, db_session, "publish-approved")
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
         draft = await create_approved_draft(client, workspace_id, profile_id, brief_id, "Alpha")
@@ -61,6 +145,7 @@ async def test_publish_approved_draft_creates_record_without_mutating_draft(
         assert published["external_url"] == "https://example.com/post/1"
         assert published["publish_method"] == "manual"
         assert published["status"] == "published"
+        assert published["platform_post_id"] is None
 
         unchanged = await client.get(
             f"/api/v1/profiles/{profile_id}/drafts/{draft['id']}",
@@ -74,9 +159,11 @@ async def test_publish_approved_draft_creates_record_without_mutating_draft(
         assert unchanged_data["caption"] == draft["caption"]
 
 
-async def test_publish_ineligible_status_draft_rejected(override_get_db) -> None:
+async def test_publish_ineligible_status_draft_rejected(
+    override_get_db, db_session: AsyncSession
+) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        workspace_id = await create_workspace(client, "publish-ineligible")
+        workspace_id = await authed_workspace(client, db_session, "publish-ineligible")
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
 
@@ -117,9 +204,9 @@ async def test_publish_ineligible_status_draft_rejected(override_get_db) -> None
             assert draft["id"] not in {item["draft_id"] for item in listed.json()}
 
 
-async def test_publish_ready_draft_is_eligible(override_get_db) -> None:
+async def test_publish_ready_draft_is_eligible(override_get_db, db_session: AsyncSession) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        workspace_id = await create_workspace(client, "publish-ready")
+        workspace_id = await authed_workspace(client, db_session, "publish-ready")
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
 
@@ -142,12 +229,12 @@ async def test_publish_ready_draft_is_eligible(override_get_db) -> None:
         assert response.json()["status"] == "published"
 
 
-async def test_publish_ownership_failures_return_404(override_get_db) -> None:
+async def test_publish_ownership_failures_return_404(
+    override_get_db, db_session: AsyncSession
+) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        workspace_a = await create_workspace(client, "publish-owner-a")
-        workspace_b = await create_workspace(client, "publish-owner-b")
+        workspace_a = await authed_workspace(client, db_session, "publish-owner-a")
         profile_a = await create_profile(client, workspace_a, "A")
-        profile_b = await create_profile(client, workspace_b, "B")
         brief_a = await create_ready_brief(client, workspace_a, profile_a)
         draft_a = await create_approved_draft(client, workspace_a, profile_a, brief_a, "Owned")
 
@@ -157,6 +244,9 @@ async def test_publish_ownership_failures_return_404(override_get_db) -> None:
             json={},
         )
         assert missing_draft.status_code == 404
+
+        workspace_b = await authed_workspace(client, db_session, "publish-owner-b")
+        profile_b = await create_profile(client, workspace_b, "B")
 
         wrong_profile = await client.post(
             f"/api/v1/profiles/{profile_b}/drafts/{draft_a['id']}/publish",
@@ -173,9 +263,11 @@ async def test_publish_ownership_failures_return_404(override_get_db) -> None:
         assert wrong_workspace.status_code == 404
 
 
-async def test_list_published_content_filters_by_platform_and_status(override_get_db) -> None:
+async def test_list_published_content_filters_by_platform_and_status(
+    override_get_db, db_session: AsyncSession
+) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        workspace_id = await create_workspace(client, "publish-list")
+        workspace_id = await authed_workspace(client, db_session, "publish-list")
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
 
@@ -217,9 +309,11 @@ async def test_list_published_content_filters_by_platform_and_status(override_ge
         assert by_missing_status.json() == []
 
 
-async def test_get_published_content_returns_lineage(override_get_db) -> None:
+async def test_get_published_content_returns_lineage(
+    override_get_db, db_session: AsyncSession
+) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        workspace_id = await create_workspace(client, "publish-lineage")
+        workspace_id = await authed_workspace(client, db_session, "publish-lineage")
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
         draft = await create_approved_draft(client, workspace_id, profile_id, brief_id, "Lineage")
@@ -245,13 +339,11 @@ async def test_get_published_content_returns_lineage(override_get_db) -> None:
 
 
 async def test_get_published_content_cross_workspace_and_profile_isolation(
-    override_get_db,
+    override_get_db, db_session: AsyncSession
 ) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        workspace_a = await create_workspace(client, "publish-isolation-a")
-        workspace_b = await create_workspace(client, "publish-isolation-b")
+        workspace_a = await authed_workspace(client, db_session, "publish-isolation-a")
         profile_a = await create_profile(client, workspace_a, "A")
-        profile_b = await create_profile(client, workspace_b, "B")
         brief_a = await create_ready_brief(client, workspace_a, profile_a)
         draft_a = await create_approved_draft(client, workspace_a, profile_a, brief_a, "A item")
 
@@ -263,6 +355,9 @@ async def test_get_published_content_cross_workspace_and_profile_isolation(
         assert published.status_code == 201
         published_id = published.json()["id"]
 
+        workspace_b = await authed_workspace(client, db_session, "publish-isolation-b")
+        profile_b = await create_profile(client, workspace_b, "B")
+
         cross_workspace = await client.get(
             f"/api/v1/profiles/{profile_a}/published/{published_id}",
             params={"workspace_id": workspace_b},
@@ -271,7 +366,7 @@ async def test_get_published_content_cross_workspace_and_profile_isolation(
 
         cross_profile = await client.get(
             f"/api/v1/profiles/{profile_b}/published/{published_id}",
-            params={"workspace_id": workspace_a},
+            params={"workspace_id": workspace_b},
         )
         assert cross_profile.status_code == 404
 
@@ -282,9 +377,11 @@ async def test_get_published_content_cross_workspace_and_profile_isolation(
         assert cross_workspace_list.status_code == 404
 
 
-async def test_schedule_approved_draft_creates_scheduled_record(override_get_db) -> None:
+async def test_schedule_approved_draft_creates_scheduled_record(
+    override_get_db, db_session: AsyncSession
+) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        workspace_id = await create_workspace(client, "schedule-create")
+        workspace_id = await authed_workspace(client, db_session, "schedule-create")
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
         draft = await create_approved_draft(client, workspace_id, profile_id, brief_id, "Sched")
@@ -303,9 +400,11 @@ async def test_schedule_approved_draft_creates_scheduled_record(override_get_db)
         assert data["draft_id"] == draft["id"]
 
 
-async def test_schedule_rejects_past_time_and_ineligible_draft(override_get_db) -> None:
+async def test_schedule_rejects_past_time_and_ineligible_draft(
+    override_get_db, db_session: AsyncSession
+) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        workspace_id = await create_workspace(client, "schedule-invalid")
+        workspace_id = await authed_workspace(client, db_session, "schedule-invalid")
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
         draft = await create_approved_draft(client, workspace_id, profile_id, brief_id, "Past")
@@ -341,7 +440,7 @@ async def test_promote_due_publishes_scheduled_items_and_leaves_future_ones(
     override_get_db, db_session: AsyncSession
 ) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        workspace_id = await create_workspace(client, "schedule-promote")
+        workspace_id = await authed_workspace(client, db_session, "schedule-promote")
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
 
@@ -400,7 +499,7 @@ async def test_cancel_scheduled_publish_succeeds_and_is_excluded_from_promotion(
     override_get_db, db_session: AsyncSession
 ) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        workspace_id = await create_workspace(client, "schedule-cancel")
+        workspace_id = await authed_workspace(client, db_session, "schedule-cancel")
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
         draft = await create_approved_draft(client, workspace_id, profile_id, brief_id, "Cancel")
@@ -434,9 +533,11 @@ async def test_cancel_scheduled_publish_succeeds_and_is_excluded_from_promotion(
         assert unchanged.json()["published"]["status"] == "cancelled"
 
 
-async def test_cancel_non_scheduled_publish_rejected(override_get_db) -> None:
+async def test_cancel_non_scheduled_publish_rejected(
+    override_get_db, db_session: AsyncSession
+) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        workspace_id = await create_workspace(client, "cancel-ineligible")
+        workspace_id = await authed_workspace(client, db_session, "cancel-ineligible")
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
         draft = await create_approved_draft(client, workspace_id, profile_id, brief_id, "Direct")
@@ -456,12 +557,12 @@ async def test_cancel_non_scheduled_publish_rejected(override_get_db) -> None:
         assert cancel_attempt.status_code == 409, cancel_attempt.text
 
 
-async def test_cancel_scheduled_publish_ownership_isolation(override_get_db) -> None:
+async def test_cancel_scheduled_publish_ownership_isolation(
+    override_get_db, db_session: AsyncSession
+) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        workspace_a = await create_workspace(client, "cancel-owner-a")
-        workspace_b = await create_workspace(client, "cancel-owner-b")
+        workspace_a = await authed_workspace(client, db_session, "cancel-owner-a")
         profile_a = await create_profile(client, workspace_a, "A")
-        profile_b = await create_profile(client, workspace_b, "B")
         brief_a = await create_ready_brief(client, workspace_a, profile_a)
         draft_a = await create_approved_draft(client, workspace_a, profile_a, brief_a, "Isolate")
 
@@ -473,6 +574,9 @@ async def test_cancel_scheduled_publish_ownership_isolation(override_get_db) -> 
         )
         assert scheduled.status_code == 201
         published_id = scheduled.json()["id"]
+
+        workspace_b = await authed_workspace(client, db_session, "cancel-owner-b")
+        profile_b = await create_profile(client, workspace_b, "B")
 
         wrong_profile = await client.post(
             f"/api/v1/profiles/{profile_b}/published/{published_id}/cancel",
@@ -491,7 +595,7 @@ async def test_promote_due_atomic_claim_prevents_double_processing(
     override_get_db, db_session: AsyncSession
 ) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        workspace_id = await create_workspace(client, "schedule-atomic")
+        workspace_id = await authed_workspace(client, db_session, "schedule-atomic")
         profile_id = await create_profile(client, workspace_id, "Creator")
         brief_id = await create_ready_brief(client, workspace_id, profile_id)
         draft = await create_approved_draft(client, workspace_id, profile_id, brief_id, "Atomic")
@@ -515,3 +619,331 @@ async def test_promote_due_atomic_claim_prevents_double_processing(
         # hitting the same due window must not reclaim the already-promoted row.
         second_pass = await service.promote_due(now=promotion_time)
         assert second_pass == []
+
+
+async def test_atomic_claim_alone_prevents_double_claim_without_the_lock(
+    override_get_db, db_session: AsyncSession
+) -> None:
+    """Proves the correctness claim directly, per the Day 24 spec: the
+    atomic `UPDATE ... WHERE status = 'scheduled' ... RETURNING` in
+    `PublishedContentRepository.claim_publishing` is what prevents a
+    double-claim, not the `DistributedLock` wrapped around the cron job in
+    `app.services.publish_promotion` (which `PublishedContentService`
+    itself never touches). Two independent `PublishedContentService`
+    instances stand in for two concurrent worker instances calling
+    `claim_publishing` directly, with no lock involved anywhere in this
+    call path.
+    """
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        workspace_id = await authed_workspace(client, db_session, "schedule-atomic-nolock")
+        profile_id = await create_profile(client, workspace_id, "Creator")
+        brief_id = await create_ready_brief(client, workspace_id, profile_id)
+        draft = await create_approved_draft(client, workspace_id, profile_id, brief_id, "NoLock")
+
+        near_future = (datetime.now(UTC) + timedelta(minutes=1)).isoformat()
+        scheduled = await client.post(
+            f"/api/v1/profiles/{profile_id}/drafts/{draft['id']}/schedule",
+            params={"workspace_id": workspace_id},
+            json={"scheduled_at": near_future},
+        )
+        assert scheduled.status_code == 201
+        published_id = scheduled.json()["id"]
+
+        promotion_time = datetime.now(UTC) + timedelta(minutes=2)
+        worker_one = PublishedContentService(db_session).repository
+        worker_two = PublishedContentService(db_session).repository
+
+        claimed_by_one = await worker_one.claim_publishing(promotion_time)
+        claimed_by_two = await worker_two.claim_publishing(promotion_time)
+
+        assert {str(item.id) for item in claimed_by_one} == {published_id}
+        assert claimed_by_two == []
+
+
+async def test_publish_rejected_for_disconnected_platform_records_failure(
+    override_get_db, db_session: AsyncSession
+) -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        workspace_id = await authed_workspace(client, db_session, "publish-disconnected")
+        profile_id = await create_profile(client, workspace_id, "Creator")
+        brief_id = await create_ready_brief(client, workspace_id, profile_id)
+        draft = await create_approved_draft_on_platform(
+            client, db_session, workspace_id, profile_id, brief_id, "NoConn", "facebook"
+        )
+
+        response = await client.post(
+            f"/api/v1/profiles/{profile_id}/drafts/{draft['id']}/publish",
+            params={"workspace_id": workspace_id},
+            json={},
+        )
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["status"] == "failed"
+        assert data["publish_method"] == "api"
+        assert data["published_metadata"]["failure_reason"] == "PlatformNotConnectedError"
+
+
+async def test_schedule_rejected_for_disconnected_platform(
+    override_get_db, db_session: AsyncSession
+) -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        workspace_id = await authed_workspace(client, db_session, "schedule-disconnected")
+        profile_id = await create_profile(client, workspace_id, "Creator")
+        brief_id = await create_ready_brief(client, workspace_id, profile_id)
+        draft = await create_approved_draft_on_platform(
+            client, db_session, workspace_id, profile_id, brief_id, "NoConnSched", "youtube"
+        )
+
+        future_time = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        response = await client.post(
+            f"/api/v1/profiles/{profile_id}/drafts/{draft['id']}/schedule",
+            params={"workspace_id": workspace_id},
+            json={"scheduled_at": future_time},
+        )
+        assert response.status_code == 422, response.text
+        assert "not connected" in response.json()["detail"]
+
+
+async def test_schedule_accepted_once_platform_connected(
+    override_get_db, db_session: AsyncSession
+) -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        workspace_id = await authed_workspace(client, db_session, "schedule-connected")
+        profile_id = await create_profile(client, workspace_id, "Creator")
+        brief_id = await create_ready_brief(client, workspace_id, profile_id)
+        draft = await create_approved_draft_on_platform(
+            client, db_session, workspace_id, profile_id, brief_id, "Conn", "facebook"
+        )
+        await seed_connection(
+            db_session,
+            workspace_id=workspace_id,
+            profile_id=profile_id,
+            platform=SocialPlatform.FACEBOOK,
+        )
+
+        future_time = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        response = await client.post(
+            f"/api/v1/profiles/{profile_id}/drafts/{draft['id']}/schedule",
+            params={"workspace_id": workspace_id},
+            json={"scheduled_at": future_time},
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["publish_method"] == "api"
+
+
+async def test_publish_facebook_success_records_platform_post_id(
+    override_get_db, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        adapters_module,
+        "build_http_client",
+        lambda: fake_facebook_client(post_id="PAGE_1_POST_9"),
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        workspace_id = await authed_workspace(client, db_session, "publish-facebook-success")
+        profile_id = await create_profile(client, workspace_id, "Creator")
+        brief_id = await create_ready_brief(client, workspace_id, profile_id)
+        draft = await create_approved_draft_on_platform(
+            client, db_session, workspace_id, profile_id, brief_id, "FbOk", "facebook"
+        )
+        await seed_connection(
+            db_session,
+            workspace_id=workspace_id,
+            profile_id=profile_id,
+            platform=SocialPlatform.FACEBOOK,
+            external_account_id="page-1",
+        )
+
+        response = await client.post(
+            f"/api/v1/profiles/{profile_id}/drafts/{draft['id']}/publish",
+            params={"workspace_id": workspace_id},
+            json={},
+        )
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["status"] == "published"
+        assert data["publish_method"] == "api"
+        assert data["platform_post_id"] == "PAGE_1_POST_9"
+        assert data["external_url"] == "https://www.facebook.com/PAGE_1_POST_9"
+
+
+async def test_publish_facebook_platform_failure_marks_failed(
+    override_get_db, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        adapters_module,
+        "build_http_client",
+        lambda: fake_facebook_client(status_code=500),
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        workspace_id = await authed_workspace(client, db_session, "publish-facebook-failure")
+        profile_id = await create_profile(client, workspace_id, "Creator")
+        brief_id = await create_ready_brief(client, workspace_id, profile_id)
+        draft = await create_approved_draft_on_platform(
+            client, db_session, workspace_id, profile_id, brief_id, "FbFail", "facebook"
+        )
+        await seed_connection(
+            db_session,
+            workspace_id=workspace_id,
+            profile_id=profile_id,
+            platform=SocialPlatform.FACEBOOK,
+            external_account_id="page-1",
+        )
+
+        response = await client.post(
+            f"/api/v1/profiles/{profile_id}/drafts/{draft['id']}/publish",
+            params={"workspace_id": workspace_id},
+            json={},
+        )
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["status"] == "failed"
+        assert data["platform_post_id"] is None
+        assert data["published_metadata"]["failure_reason"] == "OAuthExchangeError"
+
+
+@pytest.mark.parametrize("platform", ["youtube", "instagram"])
+async def test_publish_media_required_platforms_fail_without_a_network_call(
+    override_get_db, db_session: AsyncSession, platform: str
+) -> None:
+    """YouTube/Instagram require a video/image asset ContentDraft (Day 12,
+    text-only) does not produce -- a real, deterministic failure, not a
+    faked success, and no network call is attempted at all (see
+    `tests.test_published_content._no_real_publish_network`, which would
+    assert on `/feed` if this ever tried to POST anywhere).
+    """
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        workspace_id = await authed_workspace(client, db_session, f"publish-{platform}-media")
+        profile_id = await create_profile(client, workspace_id, "Creator")
+        brief_id = await create_ready_brief(client, workspace_id, profile_id)
+        draft = await create_approved_draft_on_platform(
+            client, db_session, workspace_id, profile_id, brief_id, f"{platform}-media", platform
+        )
+        await seed_connection(
+            db_session,
+            workspace_id=workspace_id,
+            profile_id=profile_id,
+            platform=SocialPlatform(platform),
+        )
+
+        response = await client.post(
+            f"/api/v1/profiles/{profile_id}/drafts/{draft['id']}/publish",
+            params={"workspace_id": workspace_id},
+            json={},
+        )
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["status"] == "failed"
+        assert data["published_metadata"]["failure_reason"] == "MediaRequiredError"
+
+
+async def test_promote_due_calls_real_adapter_for_connected_platform(
+    override_get_db, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        adapters_module,
+        "build_http_client",
+        lambda: fake_facebook_client(post_id="SCHED_POST_1"),
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        workspace_id = await authed_workspace(client, db_session, "schedule-real-adapter")
+        profile_id = await create_profile(client, workspace_id, "Creator")
+        brief_id = await create_ready_brief(client, workspace_id, profile_id)
+        draft = await create_approved_draft_on_platform(
+            client, db_session, workspace_id, profile_id, brief_id, "SchedFb", "facebook"
+        )
+        await seed_connection(
+            db_session,
+            workspace_id=workspace_id,
+            profile_id=profile_id,
+            platform=SocialPlatform.FACEBOOK,
+        )
+
+        near_future = (datetime.now(UTC) + timedelta(minutes=1)).isoformat()
+        scheduled = await client.post(
+            f"/api/v1/profiles/{profile_id}/drafts/{draft['id']}/schedule",
+            params={"workspace_id": workspace_id},
+            json={"scheduled_at": near_future},
+        )
+        assert scheduled.status_code == 201
+
+        service = PublishedContentService(db_session)
+        promoted = await service.promote_due(now=datetime.now(UTC) + timedelta(minutes=2))
+        assert len(promoted) == 1
+        assert promoted[0].status == PublishStatus.PUBLISHED
+        assert promoted[0].platform_post_id == "SCHED_POST_1"
+
+
+async def test_recover_stuck_publishing_moves_old_publishing_rows_to_failed(
+    override_get_db, db_session: AsyncSession
+) -> None:
+    """Simulates a worker that claimed a row and then crashed before
+    resolving it -- the only way a row can be left in `publishing`, since
+    `promote_due` always resolves a claimed row within the same call.
+    """
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        workspace_id = await authed_workspace(client, db_session, "recover-stuck")
+        profile_id = await create_profile(client, workspace_id, "Creator")
+        brief_id = await create_ready_brief(client, workspace_id, profile_id)
+        draft = await create_approved_draft(client, workspace_id, profile_id, brief_id, "Stuck")
+
+        near_future = (datetime.now(UTC) + timedelta(minutes=1)).isoformat()
+        scheduled = await client.post(
+            f"/api/v1/profiles/{profile_id}/drafts/{draft['id']}/schedule",
+            params={"workspace_id": workspace_id},
+            json={"scheduled_at": near_future},
+        )
+        assert scheduled.status_code == 201
+        published_id = scheduled.json()["id"]
+
+        service = PublishedContentService(db_session)
+        claim_time = datetime.now(UTC) + timedelta(minutes=2)
+        claimed = await service.repository.claim_publishing(claim_time)
+        assert {str(item.id) for item in claimed} == {published_id}
+
+        # Not yet stuck: still well within the timeout window.
+        not_yet = await service.recover_stuck_publishing(now=claim_time)
+        assert not_yet == []
+
+        far_later = claim_time + timedelta(seconds=100_000)
+        recovered = await service.recover_stuck_publishing(now=far_later)
+        assert {str(item.id) for item in recovered} == {published_id}
+        assert recovered[0].status == PublishStatus.FAILED
+        assert recovered[0].published_metadata["failure_reason"] == "stuck_publishing_timeout"
+
+
+async def test_index_supports_the_claim_query(override_get_db, db_session: AsyncSession) -> None:
+    """Documents the access-path index the atomic claim query relies on --
+    `(status, scheduled_at)`, per the Day 24 spec. A real query-plan
+    assertion needs Postgres (SQLite's planner/EXPLAIN output isn't
+    representative), matching this project's established
+    Postgres-vs-SQLite testing convention; this asserts the index exists on
+    the model's own table_args instead.
+    """
+    index_names = {index.name for index in PublishedContent.__table__.indexes}
+    assert "ix_published_content_status_scheduled_at" in index_names
+
+
+async def test_publish_manual_unconnected_platform_still_uses_manual_adapter(
+    override_get_db, db_session: AsyncSession
+) -> None:
+    """A draft on a platform with no real adapter (e.g. the default "other"
+    from `app.services.brief.composer`) keeps using the original manual/
+    no-op publish path unchanged -- no PlatformConnection is required.
+    """
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        workspace_id = await authed_workspace(client, db_session, "publish-manual-other")
+        profile_id = await create_profile(client, workspace_id, "Creator")
+        brief_id = await create_ready_brief(client, workspace_id, profile_id)
+        draft = await create_approved_draft(client, workspace_id, profile_id, brief_id, "Manual")
+        assert draft["platform"] == "other"
+
+        response = await client.post(
+            f"/api/v1/profiles/{profile_id}/drafts/{draft['id']}/publish",
+            params={"workspace_id": workspace_id},
+            json={},
+        )
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["status"] == "published"
+        assert data["publish_method"] == "manual"

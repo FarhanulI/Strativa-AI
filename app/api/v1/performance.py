@@ -1,22 +1,29 @@
 from typing import Annotated
 from uuid import UUID
 
+from arq.connections import ArqRedis
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.authz.dependencies import require_profile_access
 from app.core.database import get_db_session
+from app.infrastructure.jobs.pool import get_arq_pool
+from app.models.ai_job import AIJob
 from app.models.content_profile import ContentProfile
 from app.schemas.content_performance import (
     ContentPerformanceCreate,
     ContentPerformanceResponse,
     ContentPerformanceUpdate,
-    PerformanceAnalysisResponse,
+    PerformanceAnalysisPendingResponse,
     PerformanceInsightResponse,
+    PerformanceMetricsEntryCreate,
+    PerformanceMetricsEntryResponse,
 )
 from app.services.ai.errors import AIError
 from app.services.ai.router import AIRouter
-from app.services.content_performance import ContentPerformanceService
+from app.services.content_performance import ContentPerformanceService, DuplicateReportingPeriodError
 from app.services.llm.performance_reasoner import PerformanceReasoner
 from app.services.performance_insight import PerformanceInsightService
 
@@ -25,6 +32,17 @@ router = APIRouter(prefix="/profiles/{profile_id}", tags=["Performance Intellige
 
 def not_found(error: ValueError) -> HTTPException:
     return HTTPException(status_code=404, detail=str(error))
+
+
+def _pending_analysis_response(
+    content_performance_id: UUID, job: AIJob
+) -> JSONResponse:
+    payload = PerformanceAnalysisPendingResponse(
+        content_performance_id=content_performance_id, job_id=job.id, job_status=job.status.value
+    )
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED, content=jsonable_encoder(payload)
+    )
 
 
 async def get_service(
@@ -119,16 +137,48 @@ async def delete(
         raise HTTPException(404, "Content performance not found")
 
 
-@router.post("/performance/{performance_id}/analyze", response_model=PerformanceAnalysisResponse)
+@router.post("/published/{published_id}/metrics", status_code=status.HTTP_202_ACCEPTED)
+async def submit_metrics(
+    published_id: UUID,
+    payload: PerformanceMetricsEntryCreate,
+    profile: Annotated[ContentProfile, Depends(require_profile_access)],
+    service: Annotated[ContentPerformanceService, Depends(get_service)],
+    arq_pool: Annotated[ArqRedis, Depends(get_arq_pool)],
+) -> JSONResponse:
+    try:
+        record, job = await service.submit_metrics(
+            profile.id,
+            profile.workspace_id,
+            published_id,
+            arq_pool,
+            **payload.model_dump(),
+        )
+    except DuplicateReportingPeriodError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except ValueError as error:
+        raise not_found(error) from error
+    response = PerformanceMetricsEntryResponse(
+        content_performance_id=record.id, job_id=job.id, job_status=job.status.value
+    )
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED, content=jsonable_encoder(response)
+    )
+
+
+@router.post("/performance/{performance_id}/analyze", status_code=status.HTTP_202_ACCEPTED)
 async def analyze(
     performance_id: UUID,
     profile: Annotated[ContentProfile, Depends(require_profile_access)],
     service: Annotated[ContentPerformanceService, Depends(get_service)],
-):
+    arq_pool: Annotated[ArqRedis, Depends(get_arq_pool)],
+) -> JSONResponse:
     try:
-        return await service.analyze(profile.id, profile.workspace_id, performance_id)
+        job = await service.enqueue_analysis(
+            profile.id, profile.workspace_id, performance_id, arq_pool
+        )
     except ValueError as error:
         raise not_found(error) from error
+    return _pending_analysis_response(performance_id, job)
 
 
 def insight_service(session: AsyncSession) -> PerformanceInsightService:

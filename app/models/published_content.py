@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 class PublishStatus(StrEnum):
     SCHEDULED = "scheduled"
+    PUBLISHING = "publishing"
     PUBLISHED = "published"
     FAILED = "failed"
     RETRACTED = "retracted"
@@ -40,6 +41,11 @@ class PublishedContent(Base):
     )
     platform: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     external_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    # The platform's own id for the created post/video, e.g. a Facebook Post
+    # ID or a YouTube video id. Only ever set on a real API publish success
+    # (app/platform_connections/adapters.py's PublishResult) -- never
+    # populated for a manual/no-op publish.
+    platform_post_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     scheduled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )

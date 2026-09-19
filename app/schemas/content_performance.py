@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -39,8 +39,35 @@ class ContentPerformanceResponse(ContentPerformanceCreate):
 
     id: UUID
     profile_id: UUID
+    published_content_id: UUID | None = None
+    reporting_period: date | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class PerformanceMetricsEntryCreate(BaseModel):
+    """Manual metrics entry attached to a specific PublishedContent record
+    (Day 25). `reporting_period` is required -- it, together with the
+    published_content_id from the URL, is what the database-level unique
+    constraint enforces against concurrent duplicate submissions.
+    """
+
+    reporting_period: date
+    views: int | None = Field(None, ge=0)
+    reach: int | None = Field(None, ge=0)
+    likes: int | None = Field(None, ge=0)
+    comments: int | None = Field(None, ge=0)
+    shares: int | None = Field(None, ge=0)
+    saves: int | None = Field(None, ge=0)
+    watch_time_seconds: float | None = Field(None, ge=0)
+    retention_rate: float | None = Field(None, ge=0, le=1)
+
+
+class PerformanceMetricsEntryResponse(BaseModel):
+    status: str = "pending"
+    content_performance_id: UUID
+    job_id: UUID
+    job_status: str
 
 
 class PerformanceAnalysisResponse(BaseModel):
@@ -70,6 +97,13 @@ class PerformanceAnalysisResponse(BaseModel):
     analysis_version: str
     created_at: datetime
     updated_at: datetime
+
+
+class PerformanceAnalysisPendingResponse(BaseModel):
+    status: str = "pending"
+    content_performance_id: UUID
+    job_id: UUID
+    job_status: str
 
 
 class PerformanceInsightLLMResult(BaseModel):

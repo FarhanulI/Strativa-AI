@@ -6,8 +6,9 @@ is always the former.
 
 It runs on the Day 15 arq worker's `cron_jobs` (see
 `app/workers/settings.py`) against the same Redis connection the rest of
-the job infrastructure uses -- it is not a second scheduler, and it is not
-an in-process poller in the API like Day 17's `PublishScheduler`.
+the job infrastructure uses -- it is not a second scheduler, and (like the
+Day 24 due-publish promotion job in `app.services.publish_promotion`) it is
+not an in-process FastAPI-lifespan poller.
 
 The due-item query (`status = connected AND token_expires_at <= now +
 threshold`) is served by the model's `(status, token_expires_at)` composite

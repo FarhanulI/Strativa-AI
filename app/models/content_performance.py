@@ -1,16 +1,19 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     JSON,
     CheckConstraint,
+    Date,
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -21,6 +24,7 @@ from app.core.database import Base
 if TYPE_CHECKING:
     from app.models.content_profile import ContentProfile
     from app.models.performance_analysis import PerformanceAnalysis
+    from app.models.published_content import PublishedContent
 
 
 class ContentPerformance(Base):
@@ -46,6 +50,21 @@ class ContentPerformance(Base):
         CheckConstraint(
             "retention_rate >= 0 AND retention_rate <= 1", name="ck_performance_retention_rate"
         ),
+        # Enforced at the database level (not only in the service) so a
+        # concurrent duplicate-period submission for the same published
+        # item fails atomically rather than silently duplicating. NULL
+        # `published_content_id` values (profile-scoped records predating
+        # Day 25) are never considered equal to each other by either
+        # SQLite or PostgreSQL, so they never collide under this
+        # constraint.
+        UniqueConstraint(
+            "published_content_id",
+            "reporting_period",
+            name="uq_content_performance_published_period",
+        ),
+        # Keeps the Day 25 baseline-comparison join (profile history for a
+        # given published item) cheap as history grows.
+        Index("ix_content_performance_profile_published", "profile_id", "published_content_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -53,6 +72,18 @@ class ContentPerformance(Base):
         ForeignKey("content_profiles.id", ondelete="CASCADE"), nullable=False, index=True
     )
     content_item_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True, index=True)
+    # Lineage-connected Day 25 metrics entry: the specific PublishedContent
+    # this snapshot belongs to. Nullable because pre-Day-25 profile-scoped
+    # records never had one; the manual metrics-entry endpoint always sets
+    # it.
+    published_content_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("published_content.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    # The period this metrics snapshot reports on (e.g. the day it was
+    # pulled/entered). Paired with `published_content_id` in the unique
+    # constraint above so re-submitting the same period is a database-level
+    # conflict, not an application-level check.
+    reporting_period: Mapped[date | None] = mapped_column(Date, nullable=True)
     external_post_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     platform: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     content_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -95,6 +126,7 @@ class ContentPerformance(Base):
     profile: Mapped["ContentProfile"] = relationship(
         back_populates="performance_records", lazy="selectin"
     )
+    published_content: Mapped["PublishedContent | None"] = relationship(lazy="selectin")
     analysis: Mapped["PerformanceAnalysis | None"] = relationship(
         back_populates="content_performance",
         uselist=False,

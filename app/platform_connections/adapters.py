@@ -19,6 +19,7 @@ without knowing that Facebook's is a Page token and YouTube's is an
 account token.
 """
 
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 import httpx
@@ -27,7 +28,34 @@ from app.integrations.social import SocialPlatformAdapter
 from app.platform_connections.crypto import decrypt_token
 from app.platform_connections.models import ConnectionStatus, PlatformConnection, SocialPlatform
 from app.platform_connections.oauth import get_provider
-from app.platform_connections.oauth.base import Destination, UserCredentials
+from app.platform_connections.oauth.base import (
+    Destination,
+    OAuthExchangeError,
+    UserCredentials,
+    build_http_client,
+    raise_for_platform_error,
+)
+from app.platform_connections.oauth.facebook import graph_base
+
+
+class MediaRequiredError(RuntimeError):
+    """Raised when a platform's publish call requires a video/image asset
+    that `ContentDraft` (Day 12, text-only -- title/hook/body/cta/caption,
+    no media field at all) does not produce.
+
+    YouTube and Instagram cannot publish anything without a video/image
+    binary; there is genuinely nothing to upload. Raised before any network
+    call is attempted -- a real, honest, deterministic failure rather than
+    a request built from an empty/placeholder body.
+    """
+
+
+@dataclass(frozen=True)
+class PublishResult:
+    """The outcome of a successful `publish_content` call."""
+
+    platform_post_id: str
+    external_url: str | None = None
 
 
 class PlatformConnectionAdapter(SocialPlatformAdapter, Protocol):
@@ -63,6 +91,10 @@ class PlatformConnectionAdapter(SocialPlatformAdapter, Protocol):
     def access_token(self, connection: PlatformConnection) -> str: ...
 
     async def publish(self, *, draft: dict[str, Any], platform: str) -> dict[str, Any]: ...
+
+    async def publish_content(
+        self, *, connection: PlatformConnection, draft: dict[str, Any]
+    ) -> PublishResult: ...
 
 
 class _BaseConnectionAdapter:
@@ -130,6 +162,21 @@ class _BaseConnectionAdapter:
             "connection/authorization surface only"
         )
 
+    async def publish_content(
+        self, *, connection: PlatformConnection, draft: dict[str, Any]
+    ) -> PublishResult:
+        """Real, connection-authenticated publish (Day 24).
+
+        Default: this platform requires a video/image asset that content
+        creation does not produce yet (see `MediaRequiredError`). Overridden
+        by `FacebookAdapter`, the one platform where a text-only post is a
+        genuine, complete publish.
+        """
+        raise MediaRequiredError(
+            f"{self.platform} publishing requires a video/image asset that content "
+            "creation does not produce yet"
+        )
+
     async def fetch_posts(self) -> list[dict[str, Any]]:
         raise NotImplementedError
 
@@ -155,6 +202,38 @@ class FacebookAdapter(_BaseConnectionAdapter):
     """
 
     platform = SocialPlatform.FACEBOOK
+
+    async def publish_content(
+        self, *, connection: PlatformConnection, draft: dict[str, Any]
+    ) -> PublishResult:
+        """A real Facebook Page feed post -- the one platform where a
+        text-only `ContentDraft` is a complete, genuine publish (no video/
+        image asset required, unlike YouTube/Instagram).
+        """
+        message = draft.get("caption") or "\n\n".join(
+            part for part in (draft.get("hook"), draft.get("body")) if part
+        )
+        if not message:
+            raise ValueError("Draft has no publishable text content")
+
+        access_token = self.access_token(connection)
+        client = build_http_client()
+        try:
+            response = await client.post(
+                f"{graph_base()}/{connection.external_account_id}/feed",
+                data={"message": message, "access_token": access_token},
+            )
+            raise_for_platform_error(response, "Facebook publish")
+            payload = response.json()
+        finally:
+            await client.aclose()
+
+        post_id = payload.get("id") if isinstance(payload, dict) else None
+        if not post_id or not isinstance(post_id, str):
+            raise OAuthExchangeError("Facebook publish response contained no post id")
+        return PublishResult(
+            platform_post_id=post_id, external_url=f"https://www.facebook.com/{post_id}"
+        )
 
 
 class InstagramAdapter(_BaseConnectionAdapter):

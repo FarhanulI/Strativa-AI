@@ -24,8 +24,11 @@ Day 23 connects the system to the outside world for the first time: real
 OAuth 2.0 flows for YouTube, Facebook and Instagram, with an explicit
 destination-selection step so each ContentProfile publishes to a specific
 Page/Channel rather than merely "the connected account," envelope-encrypted
-credential storage, and a scheduled proactive-refresh job. No publish call
-is wired yet (Day 24):
+credential storage, and a scheduled proactive-refresh job. Day 24 wires
+those connections into the publish flow — real Facebook Graph API calls,
+YouTube/Instagram deliberately fail fast (no video/image asset exists yet),
+and due-item promotion moves from an in-process poller to a registered
+Day 15 arq periodic job, safe under N concurrent worker instances:
 
 ```text
 Understand
@@ -33,7 +36,7 @@ Understand
   -> Brief
   -> Create
   -> Evaluate
-  -> Publish (manual confirmation)
+  -> Publish (real for Facebook; manual confirmation elsewhere)
   -> Measure / Learn (foundation established)
 ```
 
@@ -1650,6 +1653,186 @@ Verification (all actually executed):
   deliberately not implemented — each connect attempt re-runs the full
   flow. A known, accepted UX trade-off for this day, not a bug.
 
+## Day 24 - Publishing Foundation with Scheduling (Horizontally-Safe)
+
+> **Numbering note:** `PublishedContent`, its `schedule`/`cancel` flows, and
+> a single-table poller were already implemented before this day began,
+> committed as "Day 16 — Publishing Foundation" and referred to elsewhere in
+> this document (see "Known Limitations" above) as "the Day 17 publish
+> scheduler" — a pre-existing numbering inconsistency in the codebase's own
+> history, not introduced here. This entry keeps the "Day 24" label the work
+> was requested under; it does not attempt to renumber the earlier commit.
+> What Day 24 actually adds: real platform publish calls through the Day 23
+> adapters, a `publishing` claim state, `platform_post_id`, a stuck-row
+> recovery sweep, and — critically — moving due-item promotion off an
+> in-process FastAPI-lifespan `asyncio` task and onto a registered Day 15 arq
+> periodic job, which is what actually makes the claim-then-call mechanism
+> safe to run as more than one instance.
+
+Wires the Day 23 `PlatformConnection`/adapter layer into the existing
+publish/schedule flow, replacing the FastAPI-lifespan poller with a Day 15
+arq periodic job, and gives immediate and scheduled publishes a real
+terminal outcome instead of an always-successful manual placeholder.
+
+- Added `PublishStatus.PUBLISHING`, an intermediate claimed-but-not-yet-
+  resolved state between `scheduled` and `published`/`failed`, and
+  `platform_post_id` (nullable, only ever set on a genuine adapter success —
+  never fabricated, never set for the manual/no-op path).
+- `app/platform_connections/adapters.py` gained `publish_content()`: a
+  `PublishResult(platform_post_id, external_url)` return contract on the
+  `PlatformConnectionAdapter` Protocol. `FacebookAdapter.publish_content`
+  makes a real `POST {page_id}/feed` Graph API call against the draft's
+  caption/hook/body text and validates the response actually contains a
+  post id before treating it as success. `ContentDraft` (Day 12) is
+  text-only — there is no video/image asset anywhere in the system — so
+  `YouTubeAdapter`/`InstagramAdapter.publish_content` raise a typed
+  `MediaRequiredError` before any network call rather than faking a text
+  post to a video-only endpoint; this was an explicit, approved scope
+  decision, not a stub left unfinished. Every failure mode (no connection,
+  expired connection, missing media, a platform HTTP error) resolves to
+  `status=failed` with a recorded reason — never an unhandled exception.
+- `schedule_draft` now rejects scheduling to youtube/facebook/instagram
+  without an active (`status=connected`) `PlatformConnection` for that
+  profile/platform (`PlatformNotConnectedError` -> 422). `publish_draft`
+  and the scheduled-promotion path both re-fetch the connection fresh,
+  immediately before calling the adapter, rather than trusting the
+  schedule-time check — a connection revoked or expired between scheduling
+  and the due time is caught at call time, not assumed still valid.
+- Distributed-safe due-item promotion, two-phase claim-then-call:
+  `PublishedContentRepository.claim_publishing` is a single atomic
+  `UPDATE published_content SET status='publishing' WHERE status='scheduled'
+  AND scheduled_at <= now() RETURNING *`. That one statement is the entire
+  correctness guarantee under N concurrent worker instances — only one
+  instance's `UPDATE` can match and flip a given row, so a row can never be
+  claimed twice regardless of how many workers are polling. The Day 15
+  `DistributedLock`/`try_lock` wrapped around the caller
+  (`app/services/publish_promotion.py`) is a performance optimization only
+  (skips a redundant claim query when another worker already holds the
+  tick) — if the lock isn't acquired, that tick simply does nothing, which
+  is always safe because the atomic claim doesn't depend on it. Only after
+  a row is claimed does the service call the real adapter; there is
+  deliberately no auto-retry on failure, since retrying an uncertain
+  external call risks a duplicate post — a `failed` row is terminal until
+  manual review.
+- Recovery sweep (`reclaim_stuck_publishing`, same atomic-`UPDATE`-with-
+  `RETURNING` shape): rows stuck in `publishing` past a configurable
+  timeout (a worker crashed mid-call after claiming, before resolving) move
+  to `failed` for manual review. A concurrent sweep from another instance
+  can't double-process the same stuck row either, for the same reason the
+  claim itself can't be double-claimed.
+- **Replaced the old FastAPI-lifespan `asyncio.create_task` poller
+  (`app/services/publish_scheduler.py`, deleted) with two registered Day 15
+  arq `cron_jobs`** (`app/workers/settings.py`):
+  `promote_due_publishes_cron` (default every 30s, configurable via
+  `publish_promotion_interval_seconds`, must evenly divide 60 since arq
+  cron fires on second-of-minute marks) and `recover_stuck_publishes_cron`
+  (default every 15 minutes). This is the change that actually makes the
+  atomic-claim guarantee meaningful: an in-process asyncio task only ever
+  runs inside one API process, so it could never have been the thing
+  protecting against a double-publish once more than one instance existed.
+  `app/main.py` no longer starts anything in-process for publishing; the
+  only way `promote_due`/`recover_stuck_publishing` run is via
+  `uv run arq app.workers.settings.WorkerSettings`, a separate deployable
+  process, matching the Day 15 job-infrastructure convention.
+- Fixed a pre-existing bug found while touching this file:
+  `PublishedContentService.publish_draft`/`schedule_draft`/
+  `cancel_schedule` never called `session.commit()`, so every
+  publish/schedule/cancel would flush (visible mid-request) but roll back
+  once the request's session closed — nothing ever persisted. Added
+  explicit `self.session.commit()` calls, matching the convention every
+  other service in the codebase actually follows (each service commits
+  itself; there is no shared request-boundary commit layer, despite the
+  architecture doc's aspirational framing). `promote_due`/
+  `recover_stuck_publishing` deliberately do *not* commit themselves, since
+  they run in the arq worker process with no request-scoped session;
+  `app/services/publish_promotion.py` opens its own session per job and
+  commits once, mirroring the same "commit at the boundary" pattern with
+  the arq job as the boundary instead of a FastAPI request.
+- Migration `z9a0b1c2d3` (current head): Postgres-safe
+  `ALTER TYPE publishstatus ADD VALUE IF NOT EXISTS 'PUBLISHING'` and the
+  new `platform_post_id` column; downgrade converts any `PUBLISHING` rows
+  to `FAILED` before rebuilding the enum type without the value, following
+  the same reversible pattern as `n7o8p9q0r1`.
+- Endpoints (`schedule`/`publish-immediately`/`cancel`/`list`/retrieve-with-
+  lineage) are unchanged in shape from the pre-existing implementation and
+  continue to use Day 21's `require_profile_access` — every ownership
+  mismatch is a 404, never 403/400; `get_published_content` additionally
+  re-checks `published.profile_id != profile.id` as defense in depth.
+
+### Review
+
+A `backend-reviewer`-persona review (run via a general-purpose agent
+carrying that persona, since the project's custom `backend-reviewer`
+subagent type is not invocable as a distinct `subagent_type` in this
+environment) found **no Blocking (CRITICAL/HIGH) issues**. Two non-blocking
+items were logged and left as-is:
+
+- **[MEDIUM, test-honesty only, not a production defect]** The two
+  "concurrent worker" tests in `tests/test_published_content.py` run two
+  `PublishedContentService` instances against the *same* shared SQLite
+  session/connection (per the project's existing `db_session` test
+  fixture), so they prove the claim is self-consistent under sequential
+  reinvocation, not genuine two-connection concurrency — SQLite can't
+  exercise that regardless. The production claim mechanism itself
+  (`UPDATE ... RETURNING`) is correct and Postgres-safe by construction;
+  only the test docstrings slightly overstate what they demonstrate.
+  Matches the project's existing, already-documented SQLite-vs-Postgres
+  testing-gap convention (see Day 13/19/23's own notes) rather than being a
+  new gap.
+- **[LOW, pre-existing, not a Day 24 regression]** `PublishedContent.draft`
+  uses `lazy="selectin"` unconditionally, so list/create/cancel responses
+  (none of which expose draft fields) still eager-load the related
+  `ContentDraft` on every call. Present since the original Day 16
+  publishing-foundation commit; not touched here.
+
+### Verification (all actually executed)
+
+- `uv run pytest tests/test_published_content.py -q` -> **26 passed**
+  (includes the retrofitted Day 21 auth this file was missing, and 13 new
+  Day 24 tests: schedule/publish/cancel flows, the named
+  atomic-claim-alone-with-the-lock-removed test, adapter success/failure
+  paths, publish-against-a-disconnected-connection rejection, the stuck-
+  publishing recovery sweep, index usage, and ownership isolation).
+- `uv run pytest tests/test_platform_connections.py -q` -> **46 passed**,
+  no regression from the `adapters.py` additions.
+- `uv run pytest -q` (full suite) -> **14 failed, 354 passed**. The Day 23
+  baseline was 28 failed, 328 passed, with `test_published_content.py`
+  explicitly listed among the pre-existing failures (it had never been
+  retrofitted with Day 21 auth). The 14 remaining failures are
+  byte-identical by name to the non-`test_published_content.py` subset of
+  that baseline (`test_workspaces.py`, `test_intelligence_analysis.py`,
+  `test_content_intelligence_synthesis.py`) — Day 21's outstanding scope,
+  untouched by this day. **No new regressions**; this day's auth retrofit
+  incidentally closed the `test_published_content.py` gap as a side effect.
+- `uv run ruff check` and `uv run ruff format --check` over every Day 24
+  file: **clean** (one real formatting fix applied to
+  `app/services/published_content.py` during this day's own testing pass).
+  Repo-wide `ruff check .` still reports pre-existing errors in
+  `app/models/content_evaluation.py`, `app/repositories/content_evaluation.py`,
+  `app/schemas/content_evaluation.py`, `app/services/evaluation/evaluator.py`,
+  `app/services/evaluation/scoring.py`, `app/services/persona.py`, and the
+  `l5m6n7o8p9` migration — none touched by this day, not fixed, out of
+  scope.
+- `uv run alembic heads` -> `z9a0b1c2d3 (head)`, single head.
+
+### Known limitations
+
+- The Definition of Done's concurrent-worker claim test does not exercise
+  genuine multi-connection concurrency under SQLite (see Review above) —
+  a real-Postgres verification of the atomic claim under actual concurrent
+  transactions has not been performed, matching the project's existing
+  SQLite-vs-Postgres testing convention rather than being a new gap.
+- YouTube and Instagram publishing remain a deterministic `MediaRequiredError`
+  failure, not a working integration — `ContentDraft` has no video/image
+  asset to publish. This is an explicit, approved scope decision for this
+  day, not unfinished work; building a media-asset pipeline is out of scope
+  here and not yet scheduled.
+- Retracting an already-published item, and any automatic retry of a
+  failed publish, remain explicitly out of scope (unchanged from the prior
+  "Known Limitations" note above, now narrowed: only retraction and retry
+  remain open — real publishing API calls and job-queue-routed promotion,
+  both previously listed there, are done as of this day).
+
 ## Platform Infrastructure
 
 Reference material for Days 16+ so they can build on this instead of
@@ -1854,8 +2037,10 @@ The following are intentionally outside Days 1-19 (Day 16's Intelligence
 Reasoning Layer is covered separately above and closed two of these gaps —
 see the note there):
 
-- The Day 17 publish scheduler still deliberately remains its own narrow
-  single-table poller rather than routing through the Day 15 job queue.
+- ~~The Day 17 publish scheduler still deliberately remains its own narrow
+  single-table poller rather than routing through the Day 15 job queue.~~
+  Resolved by Day 24: due-item promotion is now a registered Day 15 arq
+  `cron_jobs` entry, not an in-process poller.
 - `ContentDraftVariationService.generate` does not invalidate the Day 19
   library cache (see Day 19's own "Known follow-up" note above) since it
   never mutates a `ContentDraft` field itself; only variation `select` does.
@@ -1874,13 +2059,14 @@ see the note there):
   Day 16's per-domain analysis tables — maintained by application-level
   transaction ordering instead (see Day 16 above).
 - Retry-on-failure logic for the actual platform publish call, and retracting
-  an already-published item.
-- Real publishing API calls for any platform — Day 23 implements the
-  OAuth connection/authorization surface for YouTube, Facebook and
-  Instagram, but `SocialPlatformAdapter.publish` remains a manual/no-op
-  placeholder and the Day 23 adapters' `publish` is a stub that raises.
-  Wiring connections into the publish flow is Day 24. TikTok, LinkedIn
-  and X have no OAuth implementation at all.
+  an already-published item, remain out of scope (Day 24 wired real publish
+  calls and distributed-safe promotion, but deliberately did not add
+  retry or retraction).
+- ~~Real publishing API calls for any platform~~ — resolved by Day 24 for
+  Facebook (real Graph API `feed` post). YouTube and Instagram deliberately
+  raise `MediaRequiredError` rather than a working integration, since
+  `ContentDraft` has no video/image asset (see Day 24's own notes). TikTok,
+  LinkedIn and X still have no OAuth implementation at all.
 - Performance metrics ingestion from published content.
 - A learning-alignment scoring factor for `ContentOpportunity` (explicitly
   out of scope for Day 18 — a scoring-formula change, distinct from Day 18's
@@ -1971,6 +2157,14 @@ both Postgres and the short-TTL Redis pending state, a scheduled job
 refreshes near-expiry tokens and marks failures `expired` rather than
 failing silently at publish time, and the Day 9 adapter contract gains real
 YouTube/Facebook/Instagram implementations of its connection/authorization
-surface only. No publish call is wired (Day 24), no TikTok/LinkedIn/X, and
-no advanced media generation, autonomous strategy features,
-learning-alignment scoring, or draft editing changes were added.
+surface only. Day 24 wires those connections into the pre-existing
+publish/schedule flow: a real Graph API publish call for Facebook,
+a deterministic fail-fast (`MediaRequiredError`) for YouTube/Instagram since
+`ContentDraft` has no video/image asset, and — the day's core safety
+change — due-item promotion moved from an in-process FastAPI-lifespan
+poller to a registered Day 15 arq periodic job built on the same atomic
+claim-then-call `UPDATE ... RETURNING` guarantee, now actually meaningful
+once more than one API/worker instance exists. No TikTok/LinkedIn/X, no new
+job/queue system, no retry-on-failure logic, no advanced media generation,
+autonomous strategy features, learning-alignment scoring, draft editing
+changes, or performance/metrics ingestion were added.

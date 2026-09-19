@@ -32,8 +32,22 @@ class Settings(BaseSettings):
     llm_provider: str = "gemini"
     llm_model: str = "gemini-configured"
     gemini_api_key: str | None = None
-    publish_scheduler_enabled: bool = True
-    publish_scheduler_poll_seconds: float = 30.0
+
+    # Publishing (app/services/published_content.py, app/services/
+    # publish_promotion.py) -- Day 24. Promotion runs as a Day 15 arq cron
+    # job, not an in-process poller; see publish_promotion.py's module
+    # docstring for why.
+    #
+    # Must evenly divide 60 -- expanded into that many second-of-minute
+    # marks in app.workers.settings (arq cron fires on fixed marks, not an
+    # arbitrary interval). Lower = scheduled publishes fire closer to their
+    # scheduled_at, at the cost of an extra claim-query poll per worker per
+    # tick.
+    publish_promotion_interval_seconds: int = 30
+    # A row is only ever stuck in `publishing` if a worker crashed mid-call;
+    # comfortably longer than any real platform call should take.
+    publish_stuck_publishing_timeout_seconds: int = 900
+    publish_stuck_recovery_interval_minutes: int = 15
 
     # Database connection pool (see docs/development/progress.md "Platform
     # Infrastructure" for the sizing formula). Environment-driven so each

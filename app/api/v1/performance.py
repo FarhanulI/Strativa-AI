@@ -23,7 +23,10 @@ from app.schemas.content_performance import (
 )
 from app.services.ai.errors import AIError
 from app.services.ai.router import AIRouter
-from app.services.content_performance import ContentPerformanceService, DuplicateReportingPeriodError
+from app.services.content_performance import (
+    ContentPerformanceService,
+    DuplicateReportingPeriodError,
+)
 from app.services.llm.performance_reasoner import PerformanceReasoner
 from app.services.performance_insight import PerformanceInsightService
 
@@ -34,15 +37,11 @@ def not_found(error: ValueError) -> HTTPException:
     return HTTPException(status_code=404, detail=str(error))
 
 
-def _pending_analysis_response(
-    content_performance_id: UUID, job: AIJob
-) -> JSONResponse:
+def _pending_analysis_response(content_performance_id: UUID, job: AIJob) -> JSONResponse:
     payload = PerformanceAnalysisPendingResponse(
         content_performance_id=content_performance_id, job_id=job.id, job_status=job.status.value
     )
-    return JSONResponse(
-        status_code=status.HTTP_202_ACCEPTED, content=jsonable_encoder(payload)
-    )
+    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=jsonable_encoder(payload))
 
 
 async def get_service(
@@ -160,9 +159,7 @@ async def submit_metrics(
     response = PerformanceMetricsEntryResponse(
         content_performance_id=record.id, job_id=job.id, job_status=job.status.value
     )
-    return JSONResponse(
-        status_code=status.HTTP_202_ACCEPTED, content=jsonable_encoder(response)
-    )
+    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=jsonable_encoder(response))
 
 
 @router.post("/performance/{performance_id}/analyze", status_code=status.HTTP_202_ACCEPTED)

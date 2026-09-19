@@ -7,6 +7,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 import app.infrastructure.ratelimit.middleware as ratelimit_middleware
 from app.auth.jwt import encode_access_token
@@ -21,28 +22,38 @@ from app.models.workspace_member import WorkspaceMember, WorkspaceRole
 
 
 @pytest.fixture
-async def db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Create a test database session using SQLite in-memory"""
-    # Use SQLite in-memory database for testing
-    # This avoids the need for a running PostgreSQL instance
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+async def db_session_factory() -> AsyncGenerator[sessionmaker, None]:
+    """A sessionmaker bound to a single SQLite in-memory engine, shared via
+    StaticPool so that multiple concurrently-open sessions (needed by tests
+    that exercise a real DB-level race, e.g. a unique-constraint conflict
+    under `asyncio.gather`) all see the same in-memory database rather than
+    each getting its own empty one.
+    """
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        echo=False,
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
 
-    # Create tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    async_session_factory = sessionmaker(
-        engine, class_=AsyncSession, expire_on_commit=False, autoflush=False
-    )
+    factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False, autoflush=False)
 
-    async with async_session_factory() as session:
-        yield session
+    yield factory
 
-    # Clean up
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
 
     await engine.dispose()
+
+
+@pytest.fixture
+async def db_session(db_session_factory: sessionmaker) -> AsyncGenerator[AsyncSession, None]:
+    """Create a test database session using SQLite in-memory"""
+    async with db_session_factory() as session:
+        yield session
 
 
 @pytest.fixture

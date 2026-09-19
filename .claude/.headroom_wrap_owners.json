@@ -3,10 +3,22 @@
     "original": "true",
     "holders": [
       {
-        "pid": 14008,
+        "pid": 17116,
         "start_src": null,
         "start_time": null,
         "port": null,
+        "inherited": false
+      }
+    ]
+  },
+  "ANTHROPIC_BASE_URL": {
+    "original": null,
+    "holders": [
+      {
+        "pid": 17116,
+        "start_src": null,
+        "start_time": null,
+        "port": 8787,
         "inherited": false
       }
     ]

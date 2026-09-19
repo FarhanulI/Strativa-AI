@@ -1833,6 +1833,116 @@ items were logged and left as-is:
   remain open — real publishing API calls and job-queue-routed promotion,
   both previously listed there, are done as of this day).
 
+## Day 25 - Performance Ingestion Pipeline
+
+Attaches recorded metrics to a specific `PublishedContent` record and runs
+the existing Day 9 `PerformanceAnalysis` logic against that
+lineage-connected data as a Day 15 async job, instead of the Day 9
+profile-scoped-only, synchronous-only entry points.
+
+- `ContentPerformance` gained `published_content_id` (FK to
+  `published_content.id`, `ondelete="CASCADE"`, nullable — pre-Day-25
+  profile-scoped records never had one, and the new manual entry endpoint
+  always sets it) and `reporting_period` (`Date`, nullable). A
+  `UniqueConstraint("published_content_id", "reporting_period")` enforces
+  duplicate-period rejection at the database level rather than an
+  application-level pre-check, so a genuine concurrent double-submission for
+  the same published item/period can't race past a check-then-insert gap;
+  NULL `published_content_id` values never collide under it in either
+  SQLite or PostgreSQL. A composite `Index("profile_id",
+  "published_content_id")` supports the baseline-comparison join as history
+  grows.
+- `POST /profiles/{profile_id}/published/{published_id}/metrics`: manual
+  metrics-entry endpoint accepting
+  views/likes/comments/shares/saves/reach/watch_time_seconds/retention_rate
+  plus a required `reporting_period`. Ownership is validated through the
+  full workspace -> profile -> `PublishedContent` chain (`require_profile_access`
+  plus a profile-scoped `PublishedContentRepository.get_by_id` lookup) —
+  any mismatch is a 404, matching the Day 21 convention. The record insert
+  and the duplicate-period `IntegrityError` -> `DuplicateReportingPeriodError`
+  -> `409 CONFLICT` translation happen inline; the Day 9 analysis itself
+  does not — the endpoint enqueues a Day 15 `performance_analysis` job via
+  `submit_job` and returns `202 ACCEPTED` with `content_performance_id` and
+  `job_id` immediately.
+- The pre-existing manual `/performance/{id}/analyze` endpoint is converted
+  from an inline call into the same `submit_job` path
+  (`ContentPerformanceService.enqueue_analysis`), so both entry points now
+  share one asynchronous invocation pattern. `ContentPerformanceService.analyze()`
+  itself — the Day 9 baseline-comparison and classification logic — is
+  byte-for-byte unchanged; only how it gets invoked changes.
+- Job handler (`_run_performance_analysis_job`, registered against
+  `performance_analysis` in `app/infrastructure/jobs/registry.py`, imported
+  at worker startup via `app/workers/settings.py`) calls
+  `PerformanceInsightService.create()`, which runs the unchanged Day 9
+  `analyze()` first and commits it, then attempts the Day 16-style
+  AI-reasoned `PerformanceInsight` on top. Per the "deterministic first, AI
+  enriched" rule, an `AIError` (all providers unavailable) does not fail the
+  job or lose the analysis — the deterministic `PerformanceAnalysis` already
+  committed survives regardless of insight generation's outcome.
+- Migration `b7c8d9e0f1a2` (new head, `Revises: z9a0b1c2d3`): adds the two
+  columns, the FK, the unique constraint, and both indexes; fully
+  reversible. (Originally authored as `a1b2c3d4e5f6`, which collided with
+  the pre-existing `a1b2c3d4e5f6_create_business_domain.py` revision id from
+  Day 6 — renumbered to `b7c8d9e0f1a2` here so `alembic heads` resolves to a
+  single head instead of erroring on a duplicate revision.)
+- Out of scope, per the day's spec: live polling of social platform APIs
+  (metrics are still caller-submitted, matching Day 9's existing "no
+  external OAuth flow or social API integration" boundary for this domain),
+  the Learning Engine (Day 26), and any change to Day 9's scoring/
+  classification formulas.
+
+### Testing
+
+- `uv run pytest tests/test_performance.py -v` -> **7 passed**: existing
+  Day 9 CRUD/median-analysis and workspace-isolation coverage, plus five new
+  Day 25 tests — ownership rejection (404) for unowned `PublishedContent`,
+  successful submission enqueueing a job, duplicate-period conflict (409),
+  a genuine concurrent duplicate-period race resolving to exactly one
+  success (via a new `db_session_factory` test fixture backed by a
+  `StaticPool`-shared SQLite in-memory engine, since the default
+  single-session fixture can't exercise a real two-connection race), and
+  baseline comparison against real `PublishedContent` history.
+  `tests/conftest.py` and the `create_opportunity` helper in
+  `tests/test_content_briefs.py` (which the concurrency test's fixtures
+  share) were adjusted in support of this — the former to add the shared
+  session factory, the latter to reuse an existing `MarketIntelligence`
+  record instead of creating a duplicate one per call, fixing a pre-existing
+  test-isolation bug the new test path exposed.
+- `uv run pytest -q` (full suite) -> **14 failed, 359 passed**, byte-identical
+  by name to the pre-existing baseline documented in Day 24's own entry
+  (`test_workspaces.py`, `test_intelligence_analysis.py`,
+  `test_content_intelligence_synthesis.py` — Day 21's outstanding scope).
+  No new regressions from this day's changes.
+- `uv run ruff check` / `uv run ruff format --check` over every Day 25 file
+  (model, service, schema, router, migration, the three test files): clean.
+  Repo-wide `ruff check .` still reports the same pre-existing, untouched
+  errors noted in Day 24's entry, plus similar drift in
+  `app/services/persona.py` and the `l5m6n7o8p9` migration — none touched
+  by this day.
+- `uv run alembic heads` -> `b7c8d9e0f1a2 (head)`, single head, after the
+  revision-id rename above.
+- `uv run alembic check` could not be run against a live PostgreSQL
+  instance in this environment (no reachable Postgres server) — matches the
+  project's existing, already-documented SQLite-vs-Postgres testing-gap
+  convention rather than a new gap. The migration was instead verified by
+  direct read-through against the model's column/constraint/index
+  definitions.
+
+### Known limitations
+
+- Metrics entry remains manual/caller-submitted; there is no live polling
+  or scheduled pull from platform APIs, matching Day 9's original scope
+  boundary and this day's explicit out-of-scope list.
+- The unique-constraint concurrency test exercises a real SQLite
+  `StaticPool`-shared two-session race rather than genuine PostgreSQL
+  multi-connection concurrency — a real-Postgres verification has not been
+  performed, matching the project's existing SQLite-vs-Postgres testing
+  convention (see Day 13/19/23/24's own notes) rather than being a new gap.
+- `PerformanceInsight` generation from the async job path depends on the
+  same AI provider availability as the pre-existing Day 16 insight flow; no
+  new fallback behavior was added beyond the existing deterministic-first
+  guarantee.
+
 ## Platform Infrastructure
 
 Reference material for Days 16+ so they can build on this instead of
@@ -2167,4 +2277,11 @@ claim-then-call `UPDATE ... RETURNING` guarantee, now actually meaningful
 once more than one API/worker instance exists. No TikTok/LinkedIn/X, no new
 job/queue system, no retry-on-failure logic, no advanced media generation,
 autonomous strategy features, learning-alignment scoring, draft editing
-changes, or performance/metrics ingestion were added.
+changes, or performance/metrics ingestion were added. Day 25 adds that
+performance/metrics ingestion: a manual metrics-entry endpoint attaches a
+caller-submitted snapshot to a specific `PublishedContent` record and
+enqueues the existing Day 9 `PerformanceAnalysis` logic as a Day 15 async
+job rather than running it inline, with database-level duplicate-period
+rejection and full workspace/profile/`PublishedContent` ownership
+validation. No live platform polling, Learning Engine work (Day 26), or
+change to Day 9's scoring/classification formulas was added.

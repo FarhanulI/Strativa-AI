@@ -23,14 +23,22 @@ async def create_profile(client: AsyncClient, workspace_id: str, name: str) -> s
 
 
 async def create_opportunity(client: AsyncClient, workspace_id: str, profile_id: str) -> str:
-    market = await client.post(
+    existing = await client.get(
         f"/api/v1/profiles/{profile_id}/market-intelligence",
         params={"workspace_id": workspace_id},
-        json={"summary": "Signals"},
     )
-    assert market.status_code == 201
+    if existing.status_code == 200:
+        market_id = existing.json()["id"]
+    else:
+        market = await client.post(
+            f"/api/v1/profiles/{profile_id}/market-intelligence",
+            params={"workspace_id": workspace_id},
+            json={"summary": "Signals"},
+        )
+        assert market.status_code == 201
+        market_id = market.json()["id"]
     signal = await client.post(
-        f"/api/v1/market-intelligence/{market.json()['id']}/signals",
+        f"/api/v1/market-intelligence/{market_id}/signals",
         params={"workspace_id": workspace_id},
         json={"title": "A useful signal", "velocity_score": 1, "engagement_score": 1},
     )

@@ -11,9 +11,11 @@ from app.infrastructure.jobs.pool import get_arq_pool
 from app.infrastructure.jobs.worker_tasks import execute_ai_job
 from app.main import app
 from app.models.ai_job import JobStatus
-from app.models.performance_analysis import PerformanceAnalysis
 from app.repositories.ai_job import AIJobRepository
-from app.services.content_performance import ContentPerformanceService, DuplicateReportingPeriodError
+from app.services.content_performance import (
+    ContentPerformanceService,
+    DuplicateReportingPeriodError,
+)
 from tests.conftest import authenticate_as_workspace_owner
 from tests.test_content_briefs import create_profile, create_workspace
 from tests.test_content_drafts import create_ready_brief
@@ -237,7 +239,7 @@ async def test_submit_metrics_duplicate_reporting_period_conflicts(
 
 
 async def test_concurrent_duplicate_reporting_period_exactly_one_succeeds(
-    override_get_db, db_session
+    override_get_db, db_session, db_session_factory
 ) -> None:
     """DB-level unique constraint, not an application-level pre-check, must
     be what prevents a race between two concurrent submissions for the same
@@ -249,12 +251,10 @@ async def test_concurrent_duplicate_reporting_period_exactly_one_succeeds(
             client, db_session, workspace_id, profile_id, "Alpha"
         )
 
-    from app.core.database import async_session_factory
-
     arq_pool = AsyncMock()
 
     async def submit() -> bool:
-        async with async_session_factory() as session:
+        async with db_session_factory() as session:
             service = ContentPerformanceService(session)
             try:
                 await service.submit_metrics(

@@ -12,9 +12,12 @@ Development proceeds in numbered "days," each scoped by a doc in `docs/developme
 
 ## Commands
 
+Running the API (not the test suite) requires PostgreSQL with the `pgvector` extension and Redis; copy `.env.example` to `.env` and set `DATABASE_URL`/`REDIS_URL` for your machine first.
+
 ```bash
 uv sync                                    # install dependencies
 uv run uvicorn app.main:app --reload --port 8000   # run the API
+uv run arq app.workers.settings.WorkerSettings      # run the background worker (arq/Redis)
 uv run alembic upgrade head                # apply migrations
 uv run alembic revision -m "..."           # create a migration (inspect existing models/migrations first)
 uv run pytest                              # run all tests
@@ -65,7 +68,7 @@ Provider-agnostic pipeline: `AITask` (what the product wants) → `AIRouter` (`a
 
 Callers request **structured** output (`AIRequest.response_model`, a Pydantic model) — never raw prose — and get back a validated `Result` plus `AIResponseMetadata` (provider, model, latency). Domain composers (e.g. `BriefComposer`) must go through the router and must never import a provider SDK or call a provider directly; if all providers fail, `AIProviderUnavailableError` is raised and callers fall back to their deterministic path rather than failing the whole request.
 
-`app/workers/` wires `arq` to Redis for background jobs (`WorkerSettings.functions` — currently empty; no jobs registered yet).
+`app/workers/settings.py` is the `arq` worker entrypoint. `execute_ai_job` is the sole registered function; it dispatches by a job's `task_type` to whichever handler `app.infrastructure.jobs.registry` has for it. Product days register real handlers by importing their module at the top of `settings.py` (the import's side effect registers the handler) — this file does not grow a new entry per task type. Time-driven work (token refresh, due-publish promotion) is registered separately as `cron_jobs`, not as a queued task type, since nothing submits it on a per-request basis.
 
 ### Conventions to match, not reinvent
 

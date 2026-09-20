@@ -2285,3 +2285,104 @@ job rather than running it inline, with database-level duplicate-period
 rejection and full workspace/profile/`PublishedContent` ownership
 validation. No live platform polling, Learning Engine work (Day 26), or
 change to Day 9's scoring/classification formulas was added.
+
+## Day 26 - Learning Engine v1 + Intelligence Feedback Loop Closure
+
+Closes the Learning Loop (product-architecture.md's Principle 12, "Learning
+Must Feed Strategy"): durable strategic patterns are now extracted from
+accumulated Day 9/25 `PerformanceAnalysis` history into a new `Learning`
+entity, and active learnings feed back into the deterministic
+`opportunity_scorer` as a small, capped, additive factor -- the first case of
+Performance Intelligence actually influencing a future opportunity's score
+rather than only being displayed.
+
+- `Learning` model (`app/models/learning.py`): `profile_id`, `dimension`
+  (`format | topic | pillar | hook_style | cta | timing`), `dimension_value`,
+  `pattern_description` and `confidence_level` (always deterministic --
+  extraction-job-owned, never client-writable), `explanation` (AI-enriched or
+  deterministic, tracked via `explanation_generation_source`),
+  `supporting_evidence` (JSONB: the `PerformanceAnalysis` ids and sample
+  stats the pattern was computed from), and `status`
+  (`active | superseded` -- a simple flag; automatic supersession is out of
+  scope). A `UniqueConstraint(profile_id, dimension, dimension_value)` makes
+  the extraction job's upsert idempotent, and a composite
+  `Index(profile_id, status, dimension)` gives the opportunity scorer's
+  per-opportunity lookup a cheap indexed read rather than a scan, per the
+  day's system-design requirement. Migration `c8d9e0f1a2b3` (new single
+  head).
+- Extraction (`app/learning/extraction.py`,
+  `extract_learnings_for_profile`): a **read-only consumer** of
+  `ContentPerformanceRepository` -- it never writes to
+  `ContentPerformance`/`PerformanceAnalysis` -- that compares each profile's
+  per-`format`/per-`topic` average `relative_engagement` (Day 9/25's
+  baseline-comparison output) against the profile's overall average. Only
+  `format` and `topic` are extracted in v1, since those are the only
+  `LearningDimension` values with real structured backing data on
+  `ContentPerformance` today; `pillar`/`hook_style`/`cta`/`timing` remain
+  valid for manually-created or future learnings. A candidate is surfaced
+  only once a profile has at least `learning_extraction_min_analyses`
+  (default 6) analyzed records overall, a dimension value has at least
+  `learning_extraction_min_group_size` (default 3) records, and its relative
+  delta clears `learning_extraction_min_delta_threshold` (default 20%) --
+  all three configurable per deployment in `app/core/config.py`. Runs as a
+  registered Day 15 arq **cron** job (`extract_learnings_cron`, nightly at
+  `learning_extraction_hour`/`learning_extraction_minute`, default 3:00 AM),
+  never per-metrics-submission, guarded by a `try_lock` against redundant
+  concurrent runs across worker instances -- correctness itself comes from
+  the model's unique constraint, so re-running the job for the same period
+  upserts rather than duplicates. A `learning_explanation` AI task
+  (`LearningExplainer`) enriches only the `explanation` text from the
+  deterministic pattern/evidence; on `AIError` the explanation falls back to
+  the deterministic `pattern_description` and
+  `explanation_generation_source` records `deterministic`, per Principle 16.
+- CRUD/list API (`app/api/v1/learnings.py`, under
+  `/profiles/{profile_id}/learnings`): standard workspace-ownership-chain
+  enforcement via `require_profile_access` (404 on any mismatch, matching
+  Day 21). `LearningUpdate` only accepts `status` -- pattern data,
+  confidence, and evidence stay extraction-job-owned and are never
+  client-writable, matching the schema-layer stripping rule this file's
+  CLAUDE.md documents for other server-controlled fields.
+- **Feedback loop closure** (`app/ai/strategy/opportunity_scorer.py`):
+  extended `OpportunityScorer.score()` with a `learning_alignment` factor,
+  computed by `calculate_learning_alignment` / `find_matching_learning` --
+  matches a new opportunity's recommended format or signal topic against
+  active (`LearningStatus.ACTIVE`) learnings on the `format`/`topic`
+  dimensions, and takes the highest-confidence match. The adjustment is
+  `confidence_level * LEARNING_ALIGNMENT_WEIGHT` (weight = **0.05**,
+  documented alongside the constant), applied **additively on top of** --
+  never rebalanced into -- the four existing weighted factors
+  (`signal_strength` 0.30, `profile_relevance` 0.30, `goal_alignment` 0.20,
+  `timeliness` 0.20), so it can nudge a score by at most 0.05 and never
+  dominates it. It defaults to `0.0` whenever no learnings are supplied or
+  none match, which is byte-identical to pre-Day-26 scoring behavior for
+  every profile with zero active learnings.
+  `ContentOpportunityService.create()` (`app/services/content_opportunity.py`)
+  queries `LearningRepository.list_active_for_dimensions` (the indexed
+  read) and passes the result into `scorer.score()`; the matched
+  `Learning`'s id is recorded on `opportunity_metadata.influencing_learning_id`
+  alongside the existing `score_components`.
+- `strategic_rationale` (`app/services/opportunity_reasoning.py`,
+  `generate_rationale`) now looks up `influencing_learning_id` from that
+  metadata when present, re-validates it against the opportunity's own
+  `profile_id`, and passes the learning's `dimension`/`dimension_value`/
+  `pattern_description`/`explanation` into the `opportunity_reasoning` AI
+  task's context as `influencing_learning`, so the LLM-reasoned rationale
+  can explicitly cite the pattern as evidence rather than only ever
+  grounding in the cross-domain intelligence synthesis.
+- Out of scope, per the day's spec: automatic learning supersession beyond
+  the `active`/`superseded` status flag, and any change to
+  Brief/Draft/Variation/Evaluation scoring.
+
+### Testing
+
+- `uv run pytest tests/test_learning.py -v` -> **10 passed**: scorer
+  baseline regression (`learning_alignment` defaults to `0.0` and `total` is
+  unchanged with no active learnings supplied), a capped-bonus case on a
+  format match, superseded learnings ignored by the matcher, extraction
+  surfacing a clearly-separated high-performing format and re-running
+  idempotently (no duplicate rows), a below-minimum-analyses profile
+  correctly skipped, AI-enriched vs. deterministic-fallback explanation
+  generation, full CRUD/list, cross-tenant 404 ownership isolation, and an
+  end-to-end integration test confirming an active learning both raises a
+  new opportunity's score/metadata and reaches the `opportunity_reasoning`
+  AI context verbatim.

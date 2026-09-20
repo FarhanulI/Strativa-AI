@@ -159,9 +159,7 @@ class OpportunityScorer:
             recommended_format, signal_topic, learnings
         )
         total = self._clamp(core_total + learning_alignment)
-        return OpportunityScore(
-            **components, learning_alignment=learning_alignment, total=total
-        )
+        return OpportunityScore(**components, learning_alignment=learning_alignment, total=total)
 
     @staticmethod
     def _clamp(value: float) -> float:

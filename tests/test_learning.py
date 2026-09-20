@@ -135,7 +135,9 @@ def test_learning_alignment_applies_capped_bonus_on_format_match() -> None:
         profile, signal, "growth", recommended_format="short_video", learnings=[learning]
     )
 
-    assert result.learning_alignment == pytest.approx(0.8 * OpportunityScorer.LEARNING_ALIGNMENT_WEIGHT)
+    assert result.learning_alignment == pytest.approx(
+        0.8 * OpportunityScorer.LEARNING_ALIGNMENT_WEIGHT
+    )
     assert result.total == pytest.approx(0.9 + result.learning_alignment)
 
 
@@ -164,7 +166,9 @@ async def test_extraction_surfaces_high_performing_format_and_is_idempotent(
 ) -> None:
     _, profile = await _create_workspace_and_profile(db_session, "learning-extraction")
     for _ in range(4):
-        await _add_analyzed_record(db_session, profile, format="talking_head", relative_engagement=1.0)
+        await _add_analyzed_record(
+            db_session, profile, format="talking_head", relative_engagement=1.0
+        )
     for _ in range(3):
         await _add_analyzed_record(
             db_session, profile, format="short_video", relative_engagement=2.0
@@ -174,13 +178,10 @@ async def test_extraction_surfaces_high_performing_format_and_is_idempotent(
     router = _fake_learning_router()
     first_run = await extract_learnings_for_profile(db_session, profile.id, router)
     assert any(
-        learning.dimension == LearningDimension.FORMAT
-        and learning.dimension_value == "short_video"
+        learning.dimension == LearningDimension.FORMAT and learning.dimension_value == "short_video"
         for learning in first_run
     )
-    matched = next(
-        learning for learning in first_run if learning.dimension_value == "short_video"
-    )
+    matched = next(learning for learning in first_run if learning.dimension_value == "short_video")
     assert matched.explanation == "AI-authored explanation."
 
     repository = LearningRepository(db_session)
@@ -198,7 +199,9 @@ async def test_extraction_falls_back_to_deterministic_explanation_on_ai_failure(
 ) -> None:
     _, profile = await _create_workspace_and_profile(db_session, "learning-extraction-fallback")
     for _ in range(4):
-        await _add_analyzed_record(db_session, profile, format="talking_head", relative_engagement=1.0)
+        await _add_analyzed_record(
+            db_session, profile, format="talking_head", relative_engagement=1.0
+        )
     for _ in range(3):
         await _add_analyzed_record(
             db_session, profile, format="short_video", relative_engagement=2.0

@@ -13,7 +13,10 @@ SYSTEM_PROMPT = (
     "profile right now. Ground your explanation in the provided score components and the "
     "profile's current cross-domain intelligence synthesis. Do not invent facts about the "
     "profile, audience, market, or performance that are not present in the provided "
-    "context. Use likely, suggests, appears, or may indicate for interpretive claims."
+    "context. Use likely, suggests, appears, or may indicate for interpretive claims. "
+    "If the context includes an influencing_learning, explicitly reference that "
+    "durable performance pattern as part of why this opportunity matters -- it "
+    "represents evidence from the profile's own content history, not a guess."
 )
 
 PROMPT_VERSION = "opportunity_reasoning_v1"

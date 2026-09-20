@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,7 @@ from app.infrastructure.ratelimit.policy import reasoning_rule
 from app.infrastructure.redis_client import get_redis
 from app.models.content_opportunity import ContentOpportunity, RationaleGenerationSource
 from app.models.intelligence_analysis import AnalysisGenerationSource
+from app.models.learning import Learning
 from app.repositories.content_intelligence_synthesis import ContentIntelligenceSynthesisRepository
 from app.services.ai.errors import AIError
 from app.services.ai.router import AIRouter
@@ -44,8 +46,9 @@ async def generate_rationale(
     )
 
     if synthesis_available:
-        score_components = (opportunity.opportunity_metadata or {}).get("score_components", {})
-        context = {
+        metadata = opportunity.opportunity_metadata or {}
+        score_components = metadata.get("score_components", {})
+        context: dict[str, Any] = {
             "opportunity": {
                 "title": opportunity.title,
                 "source_signal": opportunity.source_signal.value,
@@ -60,6 +63,22 @@ async def generate_rationale(
                 "key_themes": synthesis.key_themes,
             },
         }
+
+        # Day 26 feedback-loop closure: when a Learning influenced this
+        # opportunity's score (see app.ai.strategy.opportunity_scorer's
+        # learning_alignment factor), surface it so the AI-reasoned
+        # rationale can explicitly reference the pattern instead of only
+        # ever grounding in the cross-domain synthesis.
+        influencing_learning_id = metadata.get("influencing_learning_id")
+        if influencing_learning_id:
+            learning = await session.get(Learning, UUID(influencing_learning_id))
+            if learning is not None and learning.profile_id == profile_id:
+                context["influencing_learning"] = {
+                    "dimension": learning.dimension.value,
+                    "dimension_value": learning.dimension_value,
+                    "pattern_description": learning.pattern_description,
+                    "explanation": learning.explanation,
+                }
         reasoner = OpportunityReasoner(router)
         try:
             ai_result = await reasoner.reason(context=context)

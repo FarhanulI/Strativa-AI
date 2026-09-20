@@ -13,13 +13,17 @@ from app.models.content_opportunity import (
     OpportunitySource,
     OpportunityStatus,
 )
+from app.models.learning import LearningDimension
 from app.models.performance_insight import PerformanceInsight
 from app.repositories.audience_signal import AudienceSignalRepository
 from app.repositories.content_opportunity import ContentOpportunityRepository
 from app.repositories.content_profile import ContentProfileRepository
+from app.repositories.learning import LearningRepository
 from app.repositories.market_intelligence import MarketIntelligenceRepository
 from app.repositories.market_signal import MarketSignalRepository
 from app.services.ai.tasks.types import AITask
+
+_LEARNING_ALIGNMENT_DIMENSIONS = (LearningDimension.FORMAT, LearningDimension.TOPIC)
 
 
 class ContentOpportunityService:
@@ -30,6 +34,7 @@ class ContentOpportunityService:
         self.market_repository = MarketIntelligenceRepository(session)
         self.signal_repository = MarketSignalRepository(session)
         self.audience_signal_repository = AudienceSignalRepository(session)
+        self.learning_repository = LearningRepository(session)
         self.scorer = OpportunityScorer()
 
     async def create(
@@ -80,7 +85,20 @@ class ContentOpportunityService:
             if audience_signal_id is not None:
                 raise ValueError("Audience signals require an audience_question opportunity")
             signal = await self._get_signal_for_profile(profile_id, market_signal_id)
-        score = self.scorer.score(profile, signal, values["target_objective"])
+        recommended_format = values.get("recommended_format")
+        learnings = await self.learning_repository.list_active_for_dimensions(
+            profile_id, _LEARNING_ALIGNMENT_DIMENSIONS
+        )
+        score = self.scorer.score(
+            profile,
+            signal,
+            values["target_objective"],
+            recommended_format=recommended_format,
+            learnings=learnings,
+        )
+        influencing_learning = self.scorer.find_matching_learning(
+            recommended_format, getattr(signal, "topic", None) if signal else None, learnings
+        )
         opportunity = ContentOpportunity(
             profile_id=profile_id,
             market_signal_id=(
@@ -115,7 +133,11 @@ class ContentOpportunityService:
                     "profile_relevance": score.profile_relevance,
                     "goal_alignment": score.goal_alignment,
                     "timeliness": score.timeliness,
+                    "learning_alignment": score.learning_alignment,
                 },
+                "influencing_learning_id": (
+                    str(influencing_learning.id) if influencing_learning else None
+                ),
             },
         )
         await self.repository.create(opportunity)
@@ -164,7 +186,20 @@ class ContentOpportunityService:
         if values.get("target_objective") is not None:
             opportunity.target_objective = values["target_objective"]
             signal = await self._get_opportunity_signal(profile_id, opportunity)
-            score = self.scorer.score(profile, signal, opportunity.target_objective)
+            recommended_format = opportunity.recommended_format
+            learnings = await self.learning_repository.list_active_for_dimensions(
+                profile_id, _LEARNING_ALIGNMENT_DIMENSIONS
+            )
+            score = self.scorer.score(
+                profile,
+                signal,
+                opportunity.target_objective,
+                recommended_format=recommended_format,
+                learnings=learnings,
+            )
+            influencing_learning = self.scorer.find_matching_learning(
+                recommended_format, getattr(signal, "topic", None) if signal else None, learnings
+            )
             opportunity.opportunity_score = score.total
             opportunity.priority = self._priority(score.total)
             opportunity.opportunity_metadata = {
@@ -174,7 +209,11 @@ class ContentOpportunityService:
                     "profile_relevance": score.profile_relevance,
                     "goal_alignment": score.goal_alignment,
                     "timeliness": score.timeliness,
+                    "learning_alignment": score.learning_alignment,
                 },
+                "influencing_learning_id": (
+                    str(influencing_learning.id) if influencing_learning else None
+                ),
             }
         await self.repository.update(opportunity)
         await self.session.commit()

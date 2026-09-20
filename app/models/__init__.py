@@ -47,6 +47,12 @@ from app.models.intelligence_analysis import (
     BrandAnalysis,
     MarketAnalysis,
 )
+from app.models.learning import (
+    ExplanationGenerationSource,
+    Learning,
+    LearningDimension,
+    LearningStatus,
+)
 from app.models.market_intelligence import MarketIntelligence
 from app.models.market_signal import MarketSignal
 from app.models.offer import Offer
@@ -108,6 +114,10 @@ __all__ = [
     "PerformanceAnalysis",
     "PerformanceClassification",
     "PerformanceInsight",
+    "ExplanationGenerationSource",
+    "Learning",
+    "LearningDimension",
+    "LearningStatus",
     "Desire",
     "MarketIntelligence",
     "MarketSignal",

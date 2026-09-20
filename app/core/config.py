@@ -184,6 +184,26 @@ class Settings(BaseSettings):
     # Outbound HTTP to platform OAuth/Graph endpoints.
     platform_http_timeout_seconds: float = 10.0
 
+    # --- Learning Engine (app/learning) -- Day 26 ---
+    #
+    # Deterministic pattern extraction runs as a nightly arq cron job
+    # (app.learning.extraction.extract_learnings_cron), not per-metrics
+    # -submission, to bound AI/compute cost as the number of profiles and
+    # PerformanceAnalysis records grows.
+    learning_extraction_hour: int = 3
+    learning_extraction_minute: int = 0
+    # A profile needs at least this many analyzed ContentPerformance
+    # records before extraction runs at all -- below this, dimension-value
+    # comparisons are too noisy to call a "pattern".
+    learning_extraction_min_analyses: int = 6
+    # A dimension value (e.g. one format) needs at least this many analyzed
+    # records of its own to be compared against the profile's overall
+    # average -- avoids surfacing a "pattern" from a single lucky post.
+    learning_extraction_min_group_size: int = 3
+    # Minimum relative-engagement delta (vs. the profile's overall average)
+    # for a dimension value to be surfaced as a candidate learning.
+    learning_extraction_min_delta_threshold: float = 0.20
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

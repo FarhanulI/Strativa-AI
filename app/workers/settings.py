@@ -7,6 +7,7 @@ import app.services.intelligence_analysis  # noqa: F401
 import app.services.opportunity_reasoning  # noqa: F401
 from app.core.config import settings
 from app.infrastructure.jobs.worker_tasks import execute_ai_job
+from app.learning.extraction import extract_learnings_cron
 from app.platform_connections.refresh import refresh_platform_connections_cron
 from app.services.publish_promotion import (
     promote_due_publishes_cron,
@@ -63,6 +64,16 @@ class WorkerSettings:
         cron(
             recover_stuck_publishes_cron,
             minute=set(range(0, 60, settings.publish_stuck_recovery_interval_minutes)),
+            run_at_startup=False,
+        ),
+        # Day 26: nightly deterministic pattern extraction (Learning
+        # Engine) -- time-driven, not request-driven, so a cron job rather
+        # than a queued execute_ai_job task type, matching the two entries
+        # above.
+        cron(
+            extract_learnings_cron,
+            hour={settings.learning_extraction_hour},
+            minute={settings.learning_extraction_minute},
             run_at_startup=False,
         ),
     ]

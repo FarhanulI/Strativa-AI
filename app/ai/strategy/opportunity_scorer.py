@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from app.models.learning import Learning, LearningDimension, LearningStatus
+
 
 @dataclass(frozen=True)
 class OpportunityScore:
@@ -9,6 +11,13 @@ class OpportunityScore:
     profile_relevance: float
     goal_alignment: float
     timeliness: float
+    # Day 26 feedback-loop-closure factor: a small, capped, additive
+    # adjustment (see OpportunityScorer.LEARNING_ALIGNMENT_WEIGHT) applied
+    # on top of -- never rebalanced into -- the four core weighted factors
+    # above. Defaults to 0.0 whenever no active Learning matches (or none
+    # was supplied), so `total` is unchanged from pre-Day-26 behavior in
+    # that case.
+    learning_alignment: float
     total: float
 
 
@@ -66,7 +75,65 @@ class OpportunityScorer:
             return 0.0
         return self._clamp((expires_at - current).total_seconds() / lifetime)
 
-    def score(self, profile: Any, signal: Any | None, target_objective: str) -> OpportunityScore:
+    # Day 26: the learning_alignment adjustment is intentionally small and
+    # non-dominant relative to the four core weighted factors (0.30/0.30/
+    # 0.20/0.20 above) -- it can nudge a score, never dominate it.
+    LEARNING_ALIGNMENT_WEIGHT = 0.05
+
+    def find_matching_learning(
+        self,
+        recommended_format: str | None,
+        signal_topic: str | None,
+        learnings: list[Learning] | None,
+    ) -> Learning | None:
+        """The active Learning (if any) whose dimension+value matches this
+        opportunity's `format` or `topic`, highest-confidence first. Only
+        `format`/`topic` are matchable in v1 -- see
+        app/learning/extraction.py for why the other LearningDimension
+        members have no opportunity-side data to compare against yet.
+        """
+        if not learnings:
+            return None
+        candidates = [
+            learning
+            for learning in learnings
+            if learning.status == LearningStatus.ACTIVE
+            and (
+                (
+                    learning.dimension == LearningDimension.FORMAT
+                    and recommended_format
+                    and learning.dimension_value.lower() == recommended_format.lower()
+                )
+                or (
+                    learning.dimension == LearningDimension.TOPIC
+                    and signal_topic
+                    and learning.dimension_value.lower() == signal_topic.lower()
+                )
+            )
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda learning: learning.confidence_level)
+
+    def calculate_learning_alignment(
+        self,
+        recommended_format: str | None,
+        signal_topic: str | None,
+        learnings: list[Learning] | None,
+    ) -> float:
+        matched = self.find_matching_learning(recommended_format, signal_topic, learnings)
+        if matched is None:
+            return 0.0
+        return self._clamp(matched.confidence_level) * self.LEARNING_ALIGNMENT_WEIGHT
+
+    def score(
+        self,
+        profile: Any,
+        signal: Any | None,
+        target_objective: str,
+        recommended_format: str | None = None,
+        learnings: list[Learning] | None = None,
+    ) -> OpportunityScore:
         components = {
             "signal_strength": self.calculate_signal_strength(signal),
             "profile_relevance": self.calculate_profile_relevance(signal, profile),
@@ -78,7 +145,7 @@ class OpportunityScorer:
                 else None,
             ),
         }
-        total = sum(
+        core_total = sum(
             components[name] * weight
             for name, weight in {
                 "signal_strength": 0.30,
@@ -87,7 +154,14 @@ class OpportunityScorer:
                 "timeliness": 0.20,
             }.items()
         )
-        return OpportunityScore(**components, total=self._clamp(total))
+        signal_topic = getattr(signal, "topic", None) if signal else None
+        learning_alignment = self.calculate_learning_alignment(
+            recommended_format, signal_topic, learnings
+        )
+        total = self._clamp(core_total + learning_alignment)
+        return OpportunityScore(
+            **components, learning_alignment=learning_alignment, total=total
+        )
 
     @staticmethod
     def _clamp(value: float) -> float:

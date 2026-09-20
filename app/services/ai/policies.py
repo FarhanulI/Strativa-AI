@@ -15,4 +15,5 @@ TASK_PROVIDER_POLICY: dict[AITask, tuple[str, ...]] = {
     AITask.MARKET_ANALYSIS: ("gemini",),
     AITask.STRATEGIC_SYNTHESIS: ("gemini",),
     AITask.OPPORTUNITY_REASONING: ("gemini",),
+    AITask.LEARNING_EXPLANATION: ("gemini",),
 }

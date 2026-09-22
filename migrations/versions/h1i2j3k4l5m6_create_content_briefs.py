@@ -15,9 +15,11 @@ down_revision: str | None = "g9h0i1j2k3l4"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-brief_status = postgresql.ENUM("DRAFT", "READY", "APPROVED", "ARCHIVED", name="briefstatus")
+brief_status = postgresql.ENUM(
+    "DRAFT", "READY", "APPROVED", "ARCHIVED", name="briefstatus", create_type=False
+)
 generation_source = postgresql.ENUM(
-    "MANUAL", "DETERMINISTIC", "AI_ASSISTED", name="generationsource"
+    "MANUAL", "DETERMINISTIC", "AI_ASSISTED", name="generationsource", create_type=False
 )
 
 

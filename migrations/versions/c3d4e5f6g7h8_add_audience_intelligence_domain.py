@@ -1,7 +1,7 @@
 """Add audience intelligence domain
 
 Revision ID: c3d4e5f6g7h8
-Revises: 78e5a005d8db
+Revises: 9c2b8f8b6b11
 Create Date: 2026-08-27 00:00:00.000000
 
 """
@@ -13,7 +13,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "c3d4e5f6g7h8"
-down_revision: str | None = "78e5a005d8db"
+down_revision: str | None = "9c2b8f8b6b11"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

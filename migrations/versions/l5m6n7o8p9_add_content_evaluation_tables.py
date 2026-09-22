@@ -16,7 +16,13 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 evaluation_classification = postgresql.ENUM(
-    "EXCELLENT", "STRONG", "ACCEPTABLE", "WEAK", "POOR", name="evaluationclassification"
+    "EXCELLENT",
+    "STRONG",
+    "ACCEPTABLE",
+    "WEAK",
+    "POOR",
+    name="evaluationclassification",
+    create_type=False,
 )
 evaluation_dimension = postgresql.ENUM(
     "STRATEGIC_ALIGNMENT",
@@ -29,9 +35,10 @@ evaluation_dimension = postgresql.ENUM(
     "CTA_ALIGNMENT",
     "BRAND_ALIGNMENT",
     name="evaluationdimension",
+    create_type=False,
 )
 evaluation_severity = postgresql.ENUM(
-    "POSITIVE", "WARNING", "CRITICAL", name="evaluationseverity"
+    "POSITIVE", "WARNING", "CRITICAL", name="evaluationseverity", create_type=False
 )
 
 

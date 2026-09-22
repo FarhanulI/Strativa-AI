@@ -5,18 +5,20 @@ from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.database import get_db_session
 from app.infrastructure.jobs.pool import get_arq_pool
 from app.infrastructure.jobs.worker_tasks import execute_ai_job
 from app.main import app
 from app.models.ai_job import JobStatus
+from app.models.workspace import Workspace
 from app.repositories.ai_job import AIJobRepository
 from app.services.content_performance import (
     ContentPerformanceService,
     DuplicateReportingPeriodError,
 )
-from tests.conftest import authenticate_as_workspace_owner
+from tests.conftest import _test_engine, authenticate_as_workspace_owner
 from tests.test_content_briefs import create_profile, create_workspace
 from tests.test_content_drafts import create_ready_brief
 from tests.test_published_content import authed_workspace, create_approved_draft
@@ -238,40 +240,69 @@ async def test_submit_metrics_duplicate_reporting_period_conflicts(
         assert second.status_code == 409
 
 
-async def test_concurrent_duplicate_reporting_period_exactly_one_succeeds(
-    override_get_db, db_session, db_session_factory
-) -> None:
+async def test_concurrent_duplicate_reporting_period_exactly_one_succeeds() -> None:
     """DB-level unique constraint, not an application-level pre-check, must
     be what prevents a race between two concurrent submissions for the same
-    (published_content_id, reporting_period)."""
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        workspace_id = await authed_workspace(client, db_session, "metrics-race")
-        profile_id = await create_profile(client, workspace_id, "Creator")
-        published = await create_published_content(
-            client, db_session, workspace_id, profile_id, "Alpha"
-        )
+    (published_content_id, reporting_period).
 
-    arq_pool = AsyncMock()
+    Unlike every other test in this suite, this one deliberately opts out of
+    the standard SAVEPOINT-per-test isolation (`tests/conftest.py`'s
+    `db_session_factory`): that pattern binds every session in a test to one
+    shared connection/outer transaction, so a second, genuinely independent
+    connection can never see the first's uncommitted writes -- which would
+    make this race meaningless (there'd be nothing for the unique constraint
+    to arbitrate between). This test instead uses real, separately-connected,
+    actually-committing sessions throughout -- setup included -- and cleans
+    up its own rows afterward, since nothing here rolls back automatically.
+    """
+    real_session_factory = async_sessionmaker(
+        bind=_test_engine, expire_on_commit=False, autoflush=False
+    )
 
-    async def submit() -> bool:
-        async with db_session_factory() as session:
-            service = ContentPerformanceService(session)
-            try:
-                await service.submit_metrics(
-                    uuid.UUID(profile_id),
-                    uuid.UUID(workspace_id),
-                    uuid.UUID(published["id"]),
-                    arq_pool,
-                    reporting_period=__import__("datetime").date(2026, 1, 1),
-                    views=100,
-                    likes=10,
-                )
-            except DuplicateReportingPeriodError:
-                return False
-            return True
+    async def _override_get_db():
+        async with real_session_factory() as session:
+            yield session
 
-    results = await asyncio.gather(submit(), submit())
-    assert sorted(results) == [False, True]
+    app.dependency_overrides[get_db_session] = _override_get_db
+    workspace_id: str | None = None
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            async with real_session_factory() as setup_session:
+                workspace_id = await authed_workspace(client, setup_session, "metrics-race")
+            profile_id = await create_profile(client, workspace_id, "Creator")
+            published = await create_published_content(
+                client, None, workspace_id, profile_id, "Alpha"
+            )
+
+        arq_pool = AsyncMock()
+
+        async def submit() -> bool:
+            async with real_session_factory() as session:
+                service = ContentPerformanceService(session)
+                try:
+                    await service.submit_metrics(
+                        uuid.UUID(profile_id),
+                        uuid.UUID(workspace_id),
+                        uuid.UUID(published["id"]),
+                        arq_pool,
+                        reporting_period=__import__("datetime").date(2026, 1, 1),
+                        views=100,
+                        likes=10,
+                    )
+                except DuplicateReportingPeriodError:
+                    return False
+                return True
+
+        results = await asyncio.gather(submit(), submit())
+        assert sorted(results) == [False, True]
+    finally:
+        app.dependency_overrides.pop(get_db_session, None)
+        if workspace_id is not None:
+            async with real_session_factory() as cleanup_session:
+                workspace = await cleanup_session.get(Workspace, uuid.UUID(workspace_id))
+                if workspace is not None:
+                    await cleanup_session.delete(workspace)
+                    await cleanup_session.commit()
 
 
 async def test_baseline_comparison_against_real_published_content_history(

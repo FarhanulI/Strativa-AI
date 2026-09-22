@@ -23,10 +23,13 @@ learning_dimension = postgresql.ENUM(
     "CTA",
     "TIMING",
     name="learningdimension",
+    create_type=False,
 )
-learning_status = postgresql.ENUM("ACTIVE", "SUPERSEDED", name="learningstatus")
+learning_status = postgresql.ENUM(
+    "ACTIVE", "SUPERSEDED", name="learningstatus", create_type=False
+)
 explanation_generation_source = postgresql.ENUM(
-    "AI", "DETERMINISTIC", name="explanationgenerationsource"
+    "AI", "DETERMINISTIC", name="explanationgenerationsource", create_type=False
 )
 
 

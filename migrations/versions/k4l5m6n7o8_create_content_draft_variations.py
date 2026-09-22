@@ -15,9 +15,11 @@ down_revision: str | None = "i2j3k4l5m6"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-variation_type = postgresql.ENUM("HOOK", "CAPTION", name="variationtype")
+variation_type = postgresql.ENUM(
+    "HOOK", "CAPTION", name="variationtype", create_type=False
+)
 variation_generation_source = postgresql.ENUM(
-    "DETERMINISTIC", "AI", name="variationgenerationsource"
+    "DETERMINISTIC", "AI", name="variationgenerationsource", create_type=False
 )
 
 

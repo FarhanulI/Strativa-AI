@@ -1970,32 +1970,33 @@ re-explaining it. Full spec: `docs/development/day-15.md`.
 
 Environment-driven settings (`db_pool_size`, `db_max_overflow`,
 `db_pool_timeout_seconds`, `db_statement_timeout_ms`), applied only when
-`database_url` is a `postgresql` URL (SQLite, used by the test suite,
-doesn't support the same pool/timeout semantics and is left on defaults).
+`database_url` is a `postgresql` URL.
 
-Sizing formula:
-
-```text
-(app instances) x (db_pool_size + db_max_overflow) <= postgres max_connections - headroom
-```
-
-Current defaults — `db_pool_size=10`, `db_max_overflow=5` — are sized for a
-small number of app instances against a default-ish managed Postgres
-`max_connections` (100), leaving headroom for the migration runner, the
-separate worker process(es), and manual/admin connections:
+As of the Neon migration (see "Database Migration: PostgreSQL → Neon"
+below), the app connects through Neon's PgBouncer pooler rather than
+directly to Postgres, which changes the sizing question. PgBouncer already
+multiplexes connections server-side across every app process/instance, so
+the SQLAlchemy pool is no longer bounded by a shared `max_connections`
+figure the way the original (pre-Neon) formula assumed:
 
 ```text
-instances x (10 + 5) <= 100 - headroom
+(pre-Neon) (app instances) x (db_pool_size + db_max_overflow) <= postgres max_connections - headroom
 ```
 
-At `headroom ~= 25`, that supports up to 5 app instances
-(5 x 15 = 75 <= 75). Re-derive this per deployment tier against that
-tier's actual `max_connections` rather than assuming these defaults —
-they are a starting point, not a validated production value.
+Instead, the SQLAlchemy pool only needs to be large enough that a single
+app process doesn't queue checkouts under its own realistic concurrency —
+PgBouncer's own pool size on the Neon side (not configured by this app) is
+what actually bounds backend Postgres connections. Current defaults are
+`db_pool_size=5`, `db_max_overflow=5` (10 concurrent checkouts per
+process), comfortably above this API's per-process concurrency at this
+stage. Re-derive if a deployment tier's real concurrency demands it.
 
 Statement timeout: `db_statement_timeout_ms` (default 30000ms), set via
 asyncpg `connect_args={"server_settings": {"statement_timeout": "..."}}`
-at connection time.
+at connection time. This is a query-execution timeout, not a connection
+-acquisition timeout — it is unrelated to Neon's autosuspend cold-start
+latency (the delay before a suspended branch's compute wakes up), which
+only affects how long *acquiring* a new connection takes.
 
 ### Cache key conventions
 
@@ -2386,3 +2387,74 @@ rather than only being displayed.
   end-to-end integration test confirming an active learning both raises a
   new opportunity's score/metadata and reaches the `opportunity_reasoning`
   AI context verbatim.
+
+## Database Migration: PostgreSQL → Neon
+
+Local dev and the test suite now target Neon (serverless Postgres, fronted
+by PgBouncer in transaction-pooling mode) instead of a self-managed
+Postgres instance. No Docker is involved (none was used before this
+change either). Scope is local dev/test only — no CI pipeline exists yet
+to update.
+
+### What changed
+
+- `Settings` (`app/core/config.py`) gained three new fields alongside the
+  existing `database_url`: `database_url_direct`, `test_database_url`,
+  `test_database_url_direct` — see `.env.example` for what each points at.
+- `app/core/database.py`'s engine `connect_args` now sets `ssl="require"`
+  (asyncpg needs this kwarg explicitly — Neon's `?sslmode=require` query
+  string is not honored by SQLAlchemy's asyncpg dialect) and
+  `statement_cache_size=0` (disables asyncpg's client-side prepared
+  -statement cache, the one real hazard under PgBouncer transaction
+  pooling — no advisory locks, `LISTEN`/`NOTIFY`, or explicit `PREPARE`
+  exist anywhere in this codebase).
+- `migrations/env.py` now runs all Alembic DDL against `database_url_direct`
+  instead of the pooled `database_url` — PgBouncer transaction-pooling mode
+  doesn't reliably support the session semantics Alembic needs.
+- `tests/conftest.py` no longer spins up an in-memory SQLite database per
+  test. It runs `alembic upgrade head` once per test session against
+  `test_database_url_direct`, then gives each test an isolated view of the
+  persistent `test` branch via SQLAlchemy's "join into an external
+  transaction" pattern: one connection, one outer transaction per test,
+  sessions bound to it with `join_transaction_mode="create_savepoint"`.
+  Application-level `commit()` calls only release a SAVEPOINT; the outer
+  transaction is rolled back at teardown, so nothing a test writes is ever
+  visible outside it and no truncate/reset step is needed between runs.
+  `test_concurrent_duplicate_reporting_period_exactly_one_succeeds`
+  (`tests/test_performance.py`) is the one deliberate exception: it needs
+  two genuinely independent, really-committing connections for its race
+  against a real unique constraint to mean anything, so it opens real
+  sessions directly against the pooled test engine and cleans up its own
+  rows in a `finally` block instead of relying on the standard rollback.
+
+### Two Neon branches: `dev` and `test`
+
+- **`dev`** — what the locally running API (`uvicorn`) and worker (`arq`)
+  connect to via `DATABASE_URL`/`DATABASE_URL_DIRECT`.
+- **`test`** — used only by the automated test suite via
+  `TEST_DATABASE_URL`/`TEST_DATABASE_URL_DIRECT`, isolated from `dev` so
+  running the suite can never touch/wipe whatever a developer is looking
+  at locally.
+
+Both branches were created empty — no existing dev data was migrated —
+and `alembic upgrade head` was run against both from scratch as the
+initial clean-slate verification.
+
+### Pooled vs. direct connections
+
+Every branch exposes two endpoints: a pooled one (host has a `-pooler`
+suffix, routed through PgBouncer in transaction-pooling mode) and a direct
+one (unpooled). The app and test suite always connect through the pooled
+endpoint at runtime; only Alembic (and the test suite's one-time schema
+migration) uses the direct endpoint, since DDL needs real session
+semantics that transaction pooling doesn't guarantee.
+
+### Revised connection pool sizing
+
+See "Database connection pool sizing" under Platform Infrastructure above
+for the full reasoning — in short, PgBouncer now absorbs connection fan-in
+across app processes server-side, so the SQLAlchemy pool no longer needs
+to be sized against a shared Postgres `max_connections` ceiling; it only
+needs to avoid queueing within a single process. Defaults moved from
+`db_pool_size=10`/`db_max_overflow=5` to `db_pool_size=5`/
+`db_max_overflow=5`.

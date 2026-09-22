@@ -126,3 +126,37 @@ This Day 2/3 foundation enables:
 - **Advanced Features**: Content Strategy, Content Intelligence, Publishing, etc.
 
 ---
+
+
+<!-- Set up this Neon project in the current working directory.
+
+1. `npm i -g neon@latest && neon login`
+2. `neon skills -y`
+3. `neon mcp -y`
+4. `neon link --project-id withered-sunset-12594016 --branch production -y`
+5. `neon config init`
+6. Update `neon.ts`:
+
+```ts
+import { defineConfig } from "@neon/config/v1";
+
+export default defineConfig({
+  preview: {
+    // Upgrade to a paid plan to enable AI Gateway for your project.
+    // aiGateway: true,
+    functions: {
+      api: { name: "api", source: "./hello.ts" },
+    },
+  },
+});
+```
+
+and `hello.ts`:
+
+```ts
+export default async function hello(): Promise<Response> {
+  return new Response("Hello from Neon Functions");
+}
+```
+
+7. `neon deploy` -->

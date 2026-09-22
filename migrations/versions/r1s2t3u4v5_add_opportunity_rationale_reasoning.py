@@ -23,7 +23,7 @@ TABLE = "content_opportunities"
 # migration (see docs/development/day-18.md "HARD BOUNDARY") -- only the
 # provenance of strategic_rationale's text gains two new columns.
 rationale_generation_source_enum = postgresql.ENUM(
-    "AI", "DETERMINISTIC", name="rationalegenerationsource"
+    "AI", "DETERMINISTIC", name="rationalegenerationsource", create_type=False
 )
 
 

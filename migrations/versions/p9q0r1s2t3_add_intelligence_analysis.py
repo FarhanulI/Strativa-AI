@@ -15,8 +15,8 @@ down_revision: str | None = "o8p9q0r1s2"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-generation_source_enum = sa.Enum(
-    "AI", "AI_FALLBACK", "INSUFFICIENT_DATA", name="analysisgenerationsource"
+generation_source_enum = postgresql.ENUM(
+    "AI", "AI_FALLBACK", "INSUFFICIENT_DATA", name="analysisgenerationsource", create_type=False
 )
 
 TABLES = ("brand_analysis", "audience_analysis", "market_analysis")

@@ -15,7 +15,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ENUM, JSONB
 
 revision: str = "x7y8z9a0b1"
 down_revision: str | None = "w6x7y8z9a0"
@@ -26,7 +26,9 @@ _ONBOARDING_STATUS_VALUES = ("not_started", "in_progress", "completed")
 
 
 def upgrade() -> None:
-    onboarding_status_enum = sa.Enum(*_ONBOARDING_STATUS_VALUES, name="workspaceonboardingstatus")
+    onboarding_status_enum = ENUM(
+        *_ONBOARDING_STATUS_VALUES, name="workspaceonboardingstatus", create_type=False
+    )
     onboarding_status_enum.create(op.get_bind(), checkfirst=True)
 
     op.add_column(

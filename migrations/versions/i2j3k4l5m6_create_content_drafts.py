@@ -15,11 +15,15 @@ down_revision: str | None = "h1i2j3k4l5m6"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-draft_status = postgresql.ENUM("DRAFT", "READY", "APPROVED", "ARCHIVED", name="draftstatus")
-draft_generation_source = postgresql.ENUM(
-    "DETERMINISTIC", "AI", "AI_FALLBACK", "MANUAL", name="draftgenerationsource"
+draft_status = postgresql.ENUM(
+    "DRAFT", "READY", "APPROVED", "ARCHIVED", name="draftstatus", create_type=False
 )
-composition_mode = postgresql.ENUM("COMPOSE", "MANUAL", name="compositionmode")
+draft_generation_source = postgresql.ENUM(
+    "DETERMINISTIC", "AI", "AI_FALLBACK", "MANUAL", name="draftgenerationsource", create_type=False
+)
+composition_mode = postgresql.ENUM(
+    "COMPOSE", "MANUAL", name="compositionmode", create_type=False
+)
 
 
 def upgrade() -> None:

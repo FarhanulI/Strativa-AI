@@ -26,7 +26,24 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     api_v1_prefix: str = "/api/v1"
 
+    # Neon (serverless Postgres, fronted by PgBouncer in transaction-pooling
+    # mode) -- see docs/development/progress.md "Database Migration:
+    # PostgreSQL -> Neon". `database_url`/`test_database_url` are the pooled
+    # (PgBouncer, `-pooler` host) endpoints the app and test suite connect
+    # through at runtime; the `_direct` variants are the unpooled endpoints,
+    # used only for Alembic DDL (see migrations/env.py), since PgBouncer's
+    # transaction-pooling mode doesn't reliably support the session
+    # semantics Alembic needs.
     database_url: str = "postgresql+asyncpg://contentstudio:password@localhost:5432/contentstudio"
+    database_url_direct: str = (
+        "postgresql+asyncpg://contentstudio:password@localhost:5432/contentstudio"
+    )
+    test_database_url: str = (
+        "postgresql+asyncpg://contentstudio:password@localhost:5432/contentstudio_test"
+    )
+    test_database_url_direct: str = (
+        "postgresql+asyncpg://contentstudio:password@localhost:5432/contentstudio_test"
+    )
     redis_url: str = "redis://localhost:6379"
     backend_cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
     llm_provider: str = "gemini"
@@ -49,11 +66,17 @@ class Settings(BaseSettings):
     publish_stuck_publishing_timeout_seconds: int = 900
     publish_stuck_recovery_interval_minutes: int = 15
 
-    # Database connection pool (see docs/development/progress.md "Platform
-    # Infrastructure" for the sizing formula). Environment-driven so each
-    # deployment tier can size the pool against its own Postgres
-    # max_connections without a code change.
-    db_pool_size: int = 10
+    # Database connection pool (see docs/development/progress.md "Database
+    # Migration: PostgreSQL -> Neon" for the revised sizing reasoning).
+    # Neon's PgBouncer already multiplexes connections server-side across
+    # every app process/instance, so -- unlike the old self-managed-Postgres
+    # formula this replaced -- this pool no longer needs to be sized against
+    # a shared `max_connections` ceiling. It only needs to be large enough
+    # to avoid queueing *within a single app process* under this app's own
+    # concurrency; PgBouncer's own pool size on the Neon side (not
+    # configured by this app) is what actually bounds backend Postgres
+    # connections.
+    db_pool_size: int = 5
     db_max_overflow: int = 5
     db_pool_timeout_seconds: float = 30.0
     db_statement_timeout_ms: int = 30_000

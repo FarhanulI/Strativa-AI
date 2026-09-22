@@ -24,13 +24,16 @@ opportunity_source = postgresql.ENUM(
     "PILLAR_ROTATION",
     "MARKET_CONVERSATION",
     name="opportunitysource",
+    create_type=False,
 )
 target_objective = postgresql.ENUM(
-    "GROWTH", "AUTHORITY", "LEAD_GEN", "SALES", name="targetobjective"
+    "GROWTH", "AUTHORITY", "LEAD_GEN", "SALES", name="targetobjective", create_type=False
 )
-opportunity_priority = postgresql.ENUM("HIGH", "MEDIUM", "LOW", name="opportunitypriority")
+opportunity_priority = postgresql.ENUM(
+    "HIGH", "MEDIUM", "LOW", name="opportunitypriority", create_type=False
+)
 opportunity_status = postgresql.ENUM(
-    "DRAFT", "ACTIVE", "ACCEPTED", "REJECTED", "EXPIRED", name="opportunitystatus"
+    "DRAFT", "ACTIVE", "ACCEPTED", "REJECTED", "EXPIRED", name="opportunitystatus", create_type=False
 )
 
 

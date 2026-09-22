@@ -22,7 +22,9 @@ TABLES = ("audience_analysis", "market_analysis")
 # stated | observed | mixed -- what kind of data a domain analysis was
 # grounded on. Only Audience/Market carry this: Brand's grounding data is
 # already always profile-stated, so the distinction doesn't apply there.
-grounding_basis_enum = postgresql.ENUM("STATED", "OBSERVED", "MIXED", name="groundingbasis")
+grounding_basis_enum = postgresql.ENUM(
+    "STATED", "OBSERVED", "MIXED", name="groundingbasis", create_type=False
+)
 
 
 def upgrade() -> None:

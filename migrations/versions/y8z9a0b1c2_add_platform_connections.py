@@ -28,7 +28,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ENUM, JSONB
 
 revision: str = "y8z9a0b1c2"
 down_revision: str | None = "x7y8z9a0b1"
@@ -48,8 +48,8 @@ _STATUS_VALUES = ("CONNECTED", "DISCONNECTED", "EXPIRED", "REVOKED")
 
 def upgrade() -> None:
     bind = op.get_bind()
-    platform_enum = sa.Enum(*_PLATFORM_VALUES, name="socialplatform")
-    status_enum = sa.Enum(*_STATUS_VALUES, name="connectionstatus")
+    platform_enum = ENUM(*_PLATFORM_VALUES, name="socialplatform", create_type=False)
+    status_enum = ENUM(*_STATUS_VALUES, name="connectionstatus", create_type=False)
     platform_enum.create(bind, checkfirst=True)
     status_enum.create(bind, checkfirst=True)
 

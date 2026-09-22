@@ -4,54 +4,77 @@ from unittest.mock import AsyncMock
 
 import fakeredis.aioredis as fakeredis
 import pytest
+from alembic import command
+from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import app.infrastructure.ratelimit.middleware as ratelimit_middleware
 from app.auth.jwt import encode_access_token
 from app.auth.models import User
 from app.auth.security import hash_password
-from app.core.database import Base, get_db_session
+from app.core.config import settings
+from app.core.database import get_db_session
 from app.infrastructure.jobs.pool import get_arq_pool
 from app.infrastructure.redis_client import get_redis
 from app.main import app
 from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember, WorkspaceRole
 
+# Tests run against the Neon `test` branch (see docs/development/progress.md
+# "Database Migration: PostgreSQL -> Neon"), a persistent shared database --
+# not a fresh disposable SQLite/testcontainers instance per test. Schema is
+# created once per session via real migrations (also smoke-tests them), and
+# each test gets an isolated view via SAVEPOINT (see `db_session_factory`
+# below), not a truncate/reset step.
+_test_engine = create_async_engine(settings.test_database_url)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _migrate_test_database() -> None:
+    """Run `alembic upgrade head` once per test session, against the direct
+    (unpooled) test endpoint -- DDL, not app traffic, so it bypasses
+    PgBouncer transaction pooling like any other Alembic run (see
+    migrations/env.py).
+    """
+    alembic_cfg = Config("alembic.ini")
+    alembic_cfg.set_main_option("sqlalchemy.url", settings.test_database_url_direct)
+    command.upgrade(alembic_cfg, "head")
+
 
 @pytest.fixture
-async def db_session_factory() -> AsyncGenerator[sessionmaker, None]:
-    """A sessionmaker bound to a single SQLite in-memory engine, shared via
-    StaticPool so that multiple concurrently-open sessions (needed by tests
-    that exercise a real DB-level race, e.g. a unique-constraint conflict
-    under `asyncio.gather`) all see the same in-memory database rather than
-    each getting its own empty one.
+async def db_session_factory(
+    _migrate_test_database: None,
+) -> AsyncGenerator[async_sessionmaker[AsyncSession], None]:
+    """A sessionmaker whose sessions all join one outer transaction on a
+    single connection, via SQLAlchemy's "join into an external transaction"
+    pattern (`join_transaction_mode="create_savepoint"`): each session's own
+    `commit()` calls (e.g. `seed_workspace`) only release a SAVEPOINT, never
+    the outer transaction, so nothing a test does is ever visible outside
+    it, and rolling back that outer transaction at teardown is all the
+    per-test cleanup a persistent branch needs -- no truncate/reset step.
     """
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
-        echo=False,
-        poolclass=StaticPool,
-        connect_args={"check_same_thread": False},
+    connection = await _test_engine.connect()
+    outer_transaction = await connection.begin()
+
+    factory = async_sessionmaker(
+        bind=connection,
+        expire_on_commit=False,
+        autoflush=False,
+        join_transaction_mode="create_savepoint",
     )
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False, autoflush=False)
 
     yield factory
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-
-    await engine.dispose()
+    await outer_transaction.rollback()
+    await connection.close()
 
 
 @pytest.fixture
-async def db_session(db_session_factory: sessionmaker) -> AsyncGenerator[AsyncSession, None]:
-    """Create a test database session using SQLite in-memory"""
+async def db_session(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> AsyncGenerator[AsyncSession, None]:
+    """The shared, SAVEPOINT-isolated test database session for this test."""
     async with db_session_factory() as session:
         yield session
 

@@ -15,8 +15,10 @@ down_revision: str | None = "l5m6n7o8p9"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-publish_status = postgresql.ENUM("PUBLISHED", "FAILED", "RETRACTED", name="publishstatus")
-publish_method = postgresql.ENUM("MANUAL", "API", name="publishmethod")
+publish_status = postgresql.ENUM(
+    "PUBLISHED", "FAILED", "RETRACTED", name="publishstatus", create_type=False
+)
+publish_method = postgresql.ENUM("MANUAL", "API", name="publishmethod", create_type=False)
 
 
 def upgrade() -> None:

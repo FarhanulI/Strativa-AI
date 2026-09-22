@@ -33,7 +33,10 @@ class Workspace(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
     onboarding_status: Mapped[WorkspaceOnboardingStatus] = mapped_column(
-        SqlEnum(WorkspaceOnboardingStatus),
+        SqlEnum(
+            WorkspaceOnboardingStatus,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=False,
         default=WorkspaceOnboardingStatus.NOT_STARTED,
         server_default=WorkspaceOnboardingStatus.NOT_STARTED.value,

@@ -35,7 +35,12 @@ class WorkspaceMember(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     role: Mapped[WorkspaceRole] = mapped_column(
-        SqlEnum(WorkspaceRole), nullable=False, default=WorkspaceRole.MEMBER
+        SqlEnum(
+            WorkspaceRole,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=WorkspaceRole.MEMBER,
     )
     created_at: Mapped[datetime] = mapped_column(
         default=lambda: datetime.now(UTC), server_default=func.now()

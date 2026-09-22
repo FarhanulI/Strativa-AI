@@ -11,7 +11,10 @@ from app.core.config import settings
 from app.core.database import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# Migrations run against the direct/unpooled Neon endpoint, not the pooled
+# PgBouncer one `database_url` points at — PgBouncer's transaction-pooling
+# mode doesn't reliably support the session semantics DDL needs.
+config.set_main_option("sqlalchemy.url", settings.database_url_direct)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -21,7 +24,7 @@ target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=settings.database_url,
+        url=settings.database_url_direct,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},

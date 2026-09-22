@@ -37,7 +37,13 @@ class ContentProfile(Base):
     workspace_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    type: Mapped[ContentProfileType] = mapped_column(SqlEnum(ContentProfileType), nullable=False)
+    type: Mapped[ContentProfileType] = mapped_column(
+        SqlEnum(
+            ContentProfileType,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     website: Mapped[str | None] = mapped_column(String(2048), nullable=True)

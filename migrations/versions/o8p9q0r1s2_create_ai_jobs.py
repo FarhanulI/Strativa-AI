@@ -8,13 +8,16 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "o8p9q0r1s2"
 down_revision: str | None = "n7o8p9q0r1"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-job_status_enum = sa.Enum("QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "TIMED_OUT", name="jobstatus")
+job_status_enum = postgresql.ENUM(
+    "QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "TIMED_OUT", name="jobstatus", create_type=False
+)
 
 
 def upgrade() -> None:

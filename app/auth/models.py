@@ -8,11 +8,12 @@ from app.core.database import Base
 
 
 class User(Base):
-    """Credential identity for an existing, pre-seeded platform user.
+    """Credential identity for a platform user.
 
-    Day 20 (Authentication Foundation) authenticates an EXISTING user
-    against an EXISTING workspace only -- there is no signup endpoint.
-    `id` is a UUID (not an autoincrement int) so the
+    Created either by `AuthService.register` (POST /auth/register, added
+    in Day 22 — signs up a new user and auto-provisions their owning
+    Workspace) or, for Day 20-era flows, pre-seeded directly against an
+    existing workspace. `id` is a UUID (not an autoincrement int) so the
     `WorkspaceMember.user_id -> User.id` foreign key added in Day 21
     (Ownership-Chain Enforcement Retrofit) needs no type-conversion
     migration.

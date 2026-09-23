@@ -13,6 +13,7 @@ Day 21 ownership check).
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import NamedTuple, NoReturn
 
 import structlog
 from redis.asyncio import Redis
@@ -69,14 +70,57 @@ class EmailAlreadyRegisteredError(Exception):
     pass
 
 
+class WorkspaceSlugGenerationError(Exception):
+    """Raised when repeated random-suffix collisions on `Workspace.slug`
+    prevent `register` from provisioning a unique workspace after
+    `_MAX_SLUG_ATTEMPTS` tries. Distinct from `EmailAlreadyRegisteredError`
+    so callers don't misreport an available email as taken -- see
+    `_extract_constraint_name`.
+    """
+
+    pass
+
+
+_MAX_SLUG_ATTEMPTS = 3
+
+
+class RegisterResult(NamedTuple):
+    access_token: str
+    refresh_token: str
+    expires_in: int
+    workspace_id: uuid.UUID
+    workspace_onboarding_status: WorkspaceOnboardingStatus
+
+
 def _slug_base(email: str) -> str:
     """Derives a URL-safe slug fragment from an email's local part -- used
     only as a human-readable prefix; uniqueness comes from the random
-    suffix appended in `register`, not from this value.
+    suffix appended in `_generate_workspace_slug`, not from this value.
     """
     local_part = email.split("@", 1)[0].lower()
     slug = re.sub(r"[^a-z0-9]+", "-", local_part).strip("-")
     return slug or "workspace"
+
+
+def _generate_workspace_slug(email: str) -> str:
+    return f"{_slug_base(email)}-{uuid.uuid4().hex[:8]}"
+
+
+def _extract_constraint_name(err: IntegrityError) -> str:
+    """Best-effort name of the DB constraint/index that raised `err`.
+
+    On asyncpg, the driver-native error exposes the constraint name via
+    `err.orig.diag.constraint_name`. That attribute chain isn't guaranteed
+    across drivers/error shapes, so this falls back to the string form of
+    the original error (e.g. SQLite's "UNIQUE constraint failed:
+    users.email"), which still contains the offending column name for the
+    substring checks callers do against this result.
+    """
+    try:
+        constraint_name = err.orig.diag.constraint_name  # type: ignore[union-attr]
+    except AttributeError:
+        return str(err.orig)
+    return constraint_name or str(err.orig)
 
 
 class AuthService:
@@ -94,7 +138,17 @@ class AuthService:
         )
         return [str(row) for row in result.scalars()]
 
-    async def _issue_token_pair(self, user: User) -> tuple[str, str, int]:
+    async def _issue_token_pair(
+        self, user: User, *, commit: bool = True
+    ) -> tuple[str, str, int]:
+        """Builds and persists a new access/refresh token pair for `user`.
+
+        `commit` defaults to True (the login/refresh behavior). `register`
+        passes `commit=False` so the RefreshToken insert lands in the same
+        transaction/commit as the User/Workspace/WorkspaceMember it just
+        created, rather than a second, separately-committable transaction
+        (see module docstring for why that separation was a problem).
+        """
         session_id = uuid.uuid4()
         workspace_ids = await self._workspace_ids_for_user(user.id)
         access_token, _jti, exp = encode_access_token(user.id, session_id, workspace_ids)
@@ -110,16 +164,17 @@ class AuthService:
                 expires_at=refresh_expires_at,
             )
         )
-        await self.session.commit()
+        if commit:
+            await self.session.commit()
 
         expires_in = int((exp - now).total_seconds())
         return access_token, raw_refresh_token, expires_in
 
-    async def register(self, email: str, password: str) -> tuple[str, str, int]:
+    async def register(self, email: str, password: str) -> RegisterResult:
         """Creates a User, auto-provisions a Workspace with that user as its
         sole owning WorkspaceMember, sets the new workspace's
-        onboarding_status to NOT_STARTED, and issues a token pair
-        immediately -- see docs/development/day-22.md.
+        onboarding_status to NOT_STARTED, and issues a token pair --
+        all committed in a single transaction -- see docs/development/day-22.md.
 
         Duplicate-email rejection is enumeration-resistant the same way
         Day 20's login is: a pre-check gives a fast, clear rejection for
@@ -127,40 +182,91 @@ class AuthService:
         (two concurrent registrations for the same email) is normalized
         into the same `EmailAlreadyRegisteredError` rather than leaking a
         raw database error.
+
+        `Workspace.slug` is also unique, so a random-suffix collision on
+        it (unrelated to the email) is retried with a freshly generated
+        slug up to `_MAX_SLUG_ATTEMPTS` times rather than being
+        misreported as a taken email.
         """
         normalized_email = email.lower()
         existing = await self.users.get_by_email(normalized_email)
         if existing is not None:
             raise EmailAlreadyRegisteredError("An account with this email already exists")
 
-        user = User(email=normalized_email, hashed_password=hash_password(password))
-        workspace = Workspace(
-            name=f"{_slug_base(normalized_email)}'s Workspace",
-            slug=f"{_slug_base(normalized_email)}-{uuid.uuid4().hex[:8]}",
-            onboarding_status=WorkspaceOnboardingStatus.NOT_STARTED,
-        )
-        self.session.add(user)
-        self.session.add(workspace)
-        try:
-            await self.session.flush()
-        except IntegrityError as err:
-            await self.session.rollback()
-            raise EmailAlreadyRegisteredError("An account with this email already exists") from err
+        hashed_password = hash_password(password)
 
-        self.session.add(
-            WorkspaceMember(
-                workspace_id=workspace.id,
-                user_id=user.id,
-                role=WorkspaceRole.OWNER,
+        for attempt in range(1, _MAX_SLUG_ATTEMPTS + 1):
+            user = User(email=normalized_email, hashed_password=hashed_password)
+            workspace = Workspace(
+                name=f"{_slug_base(normalized_email)}'s Workspace",
+                slug=_generate_workspace_slug(normalized_email),
+                onboarding_status=WorkspaceOnboardingStatus.NOT_STARTED,
             )
-        )
-        try:
-            await self.session.commit()
-        except IntegrityError as err:
-            await self.session.rollback()
-            raise EmailAlreadyRegisteredError("An account with this email already exists") from err
+            self.session.add(user)
+            self.session.add(workspace)
+            try:
+                await self.session.flush()
+            except IntegrityError as err:
+                await self.session.rollback()
+                if self._is_retryable_slug_collision(err, attempt):
+                    continue
+                self._raise_registration_error(err)
 
-        return await self._issue_token_pair(user)
+            self.session.add(
+                WorkspaceMember(
+                    workspace_id=workspace.id,
+                    user_id=user.id,
+                    role=WorkspaceRole.OWNER,
+                )
+            )
+            access_token, raw_refresh_token, expires_in = await self._issue_token_pair(
+                user, commit=False
+            )
+
+            try:
+                await self.session.commit()
+            except IntegrityError as err:
+                await self.session.rollback()
+                if self._is_retryable_slug_collision(err, attempt):
+                    continue
+                self._raise_registration_error(err)
+
+            return RegisterResult(
+                access_token=access_token,
+                refresh_token=raw_refresh_token,
+                expires_in=expires_in,
+                workspace_id=workspace.id,
+                workspace_onboarding_status=workspace.onboarding_status,
+            )
+
+        raise WorkspaceSlugGenerationError(
+            "Could not generate a unique workspace, please try again"
+        )
+
+    @staticmethod
+    def _is_retryable_slug_collision(err: IntegrityError, attempt: int) -> bool:
+        constraint_name = _extract_constraint_name(err)
+        return "slug" in constraint_name and attempt < _MAX_SLUG_ATTEMPTS
+
+    @staticmethod
+    def _raise_registration_error(err: IntegrityError) -> NoReturn:
+        """Classifies and raises a flush/commit `IntegrityError` from
+        `register`.
+
+        An email-constraint violation raises `EmailAlreadyRegisteredError`;
+        a slug-constraint violation that has exhausted its retries raises
+        `WorkspaceSlugGenerationError`; anything else re-raises the
+        original `IntegrityError` unchanged rather than misreporting it as
+        either case.
+        """
+        constraint_name = _extract_constraint_name(err)
+        if "email" in constraint_name:
+            raise EmailAlreadyRegisteredError("An account with this email already exists") from err
+        if "slug" in constraint_name:
+            raise WorkspaceSlugGenerationError(
+                "Could not generate a unique workspace, please try again"
+            ) from err
+        raise err
 
     async def login(self, email: str, password: str) -> tuple[str, str, int]:
         user = await self.users.get_by_email(email)

@@ -14,6 +14,7 @@ from app.auth.schemas import (
     RefreshRequest,
     RegisterRequest,
     TokenResponse,
+    WorkspaceSummary,
 )
 from app.auth.service import (
     AuthService,
@@ -21,6 +22,7 @@ from app.auth.service import (
     InvalidCredentialsError,
     InvalidRefreshTokenError,
     InvalidResetTokenError,
+    WorkspaceSlugGenerationError,
 )
 from app.core.database import get_db_session
 from app.infrastructure.redis_client import get_redis
@@ -54,13 +56,19 @@ async def register(
     service: Annotated[AuthService, Depends(get_auth_service)],
 ) -> TokenResponse:
     try:
-        access_token, refresh_token, expires_in = await service.register(
-            payload.email, payload.password
-        )
+        result = await service.register(payload.email, payload.password)
     except EmailAlreadyRegisteredError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
+    except WorkspaceSlugGenerationError as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
     return TokenResponse(
-        access_token=access_token, refresh_token=refresh_token, expires_in=expires_in
+        access_token=result.access_token,
+        refresh_token=result.refresh_token,
+        expires_in=result.expires_in,
+        workspace=WorkspaceSummary(
+            id=result.workspace_id,
+            onboarding_status=result.workspace_onboarding_status,
+        ),
     )
 
 
@@ -86,11 +94,11 @@ async def refresh(
     service: Annotated[AuthService, Depends(get_auth_service)],
 ) -> TokenResponse:
     try:
-        access_token, refresh_token, expires_in = await service.refresh(payload.refresh_token)
+        access_token, new_refresh_token, expires_in = await service.refresh(payload.refresh_token)
     except InvalidRefreshTokenError as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e)) from e
     return TokenResponse(
-        access_token=access_token, refresh_token=refresh_token, expires_in=expires_in
+        access_token=access_token, refresh_token=new_refresh_token, expires_in=expires_in
     )
 
 

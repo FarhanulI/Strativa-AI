@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -157,6 +158,25 @@ class Settings(BaseSettings):
     # resist automated mass-account creation.
     auth_register_rate_limit_requests_per_window: int = 5
     auth_register_rate_limit_window_seconds: int = 60
+
+    # Refresh-token cookie settings -- DEPRECATED, unused by app/api/v1/auth.py.
+    # The refresh token is delivered in the JSON response body again: the
+    # browser never calls this backend directly, only a trusted Next.js
+    # server (BFF pattern) over a server-to-server connection, so cookie
+    # protection at this layer buys nothing -- the BFF sets its own
+    # httpOnly cookies on its own domain instead. Kept, not deleted, in
+    # case a future non-BFF client needs cookie-based delivery again.
+    refresh_cookie_name: str = "acs_refresh_token"
+    refresh_cookie_secure: bool = True
+    refresh_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
+    # Unset (None) -- the browser then scopes the cookie to the exact host
+    # that set it, which is correct for localhost and for a single-domain
+    # deployment; only set this if the API and frontend must share a
+    # cookie across sibling subdomains.
+    refresh_cookie_domain: str | None = None
+    # Scoped to auth endpoints only, not every request -- the refresh
+    # token has no reason to be sent to unrelated routes.
+    refresh_cookie_path: str = "/api/v1/auth"
 
     # --- Platform connections (app/platform_connections) -- Day 23 ---
 

@@ -1050,7 +1050,13 @@ chain now exists — `app/auth/` issues and verifies JWT access tokens
 (login, refresh with mandatory rotation, logout via Redis-based `jti`
 revocation, password reset), and `app/auth/dependencies.get_current_user`
 is the one reusable dependency that establishes caller identity from a
-verified credential, per the rule above. The chain stops there, however:
+verified credential, per the rule above. This API is consumed exclusively
+by a trusted Next.js server (BFF pattern) over a server-to-server
+connection, never directly by the browser, so both the access and
+refresh tokens are returned in the JSON response body rather than a
+cookie — browser-facing cookie protections (httpOnly, Secure, SameSite)
+are the BFF's responsibility on its own domain, not this API's. The
+chain stops there, however:
 **every step below "Authenticated User" — Workspace Membership, Role/
 Permissions, and the full ownership-chain validation on resource
 lookups — remains unimplemented.** `WorkspaceMember.user_id` is a bare,

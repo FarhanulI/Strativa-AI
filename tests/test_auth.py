@@ -159,11 +159,12 @@ async def test_revoked_jti_present_in_redis_with_remaining_ttl(
         json={"email": seed_user.email, "password": _SEED_USER_PASSWORD},
     )
     access_token = login_response.json()["access_token"]
+    refresh_token = login_response.json()["refresh_token"]
     claims = decode_access_token(access_token)
 
     await client.post(
         "/api/v1/auth/logout",
-        json={},
+        json={"refresh_token": refresh_token},
         headers={"Authorization": f"Bearer {access_token}"},
     )
 

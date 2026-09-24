@@ -78,13 +78,20 @@ async def login(
     service: Annotated[AuthService, Depends(get_auth_service)],
 ) -> TokenResponse:
     try:
-        access_token, refresh_token, expires_in = await service.login(
-            payload.email, payload.password
-        )
+        result = await service.login(payload.email, payload.password)
     except InvalidCredentialsError as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e)) from e
     return TokenResponse(
-        access_token=access_token, refresh_token=refresh_token, expires_in=expires_in
+        access_token=result.access_token,
+        refresh_token=result.refresh_token,
+        expires_in=result.expires_in,
+        workspace=(
+            WorkspaceSummary(
+                id=result.workspace_id, onboarding_status=result.workspace_onboarding_status
+            )
+            if result.workspace_id is not None
+            else None
+        ),
     )
 
 

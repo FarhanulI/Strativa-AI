@@ -12,7 +12,7 @@ Development proceeds in numbered "days," each scoped by a doc in `docs/developme
 
 ## Commands
 
-Running the API (not the test suite) requires PostgreSQL with the `pgvector` extension and Redis; copy `.env.example` to `.env` and set `DATABASE_URL`/`REDIS_URL` for your machine first.
+Database is Neon (serverless Postgres with `pgvector`), not local Postgres. Copy `.env.example` to `.env` and set four DB URLs plus `REDIS_URL`: `DATABASE_URL`/`DATABASE_URL_DIRECT` point at the `dev` branch (pooled endpoint for app traffic, direct/unpooled endpoint for Alembic DDL, since PgBouncer transaction pooling breaks migrations), and `TEST_DATABASE_URL`/`TEST_DATABASE_URL_DIRECT` point at a separate persistent `test` branch used by the suite.
 
 ```bash
 uv sync                                    # install dependencies
@@ -27,7 +27,7 @@ uv run ruff check .                        # lint
 uv run ruff format --check .               # format check
 ```
 
-Tests use an in-memory SQLite database (see [tests/conftest.py](tests/conftest.py)) via `db_session`/`override_get_db` fixtures — no running Postgres/Redis needed to run the suite. `asyncio_mode = "auto"` (pytest-asyncio), so async test functions don't need `@pytest.mark.asyncio`.
+Tests run against the real, persistent Neon `test` branch (see [tests/conftest.py](tests/conftest.py)), not SQLite or a disposable container — a session-scoped fixture runs `alembic upgrade head` once via the direct test endpoint, and each test gets isolation via a SAVEPOINT-joined transaction that's rolled back at teardown (`db_session`/`override_get_db` fixtures), not a truncate/reset step. Redis and arq are faked/mocked per-test (`fakeredis`, `AsyncMock`) — no real Redis needed to run the suite. `asyncio_mode = "auto"` (pytest-asyncio) with session-scoped event loop/fixture loop, so async test functions don't need `@pytest.mark.asyncio` and the shared engine survives across tests in a session.
 
 ## Architecture
 

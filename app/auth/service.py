@@ -92,6 +92,18 @@ class RegisterResult(NamedTuple):
     workspace_onboarding_status: WorkspaceOnboardingStatus
 
 
+class LoginResult(NamedTuple):
+    access_token: str
+    refresh_token: str
+    expires_in: int
+    # None only if the authenticated user has no workspace membership at
+    # all -- shouldn't happen for anything created via `register` (which
+    # always provisions one), but login predates register (Day 20) and
+    # doesn't assume every credential-valid user has one.
+    workspace_id: uuid.UUID | None
+    workspace_onboarding_status: WorkspaceOnboardingStatus | None
+
+
 def _slug_base(email: str) -> str:
     """Derives a URL-safe slug fragment from an email's local part -- used
     only as a human-readable prefix; uniqueness comes from the random
@@ -138,9 +150,28 @@ class AuthService:
         )
         return [str(row) for row in result.scalars()]
 
-    async def _issue_token_pair(
-        self, user: User, *, commit: bool = True
-    ) -> tuple[str, str, int]:
+    async def _primary_workspace_summary(
+        self, user_id: uuid.UUID
+    ) -> tuple[uuid.UUID, WorkspaceOnboardingStatus] | None:
+        """Returns (workspace_id, onboarding_status) for the user's first
+        workspace membership, or None if they have none.
+
+        Used by `login` so the frontend gets onboarding-routing info in
+        the same response instead of a follow-up call. `register` doesn't
+        need this: it already holds the just-created `Workspace` object
+        in memory from the same transaction, so there's nothing to query.
+        """
+        result = await self.session.execute(
+            select(Workspace.id, Workspace.onboarding_status)
+            .join(WorkspaceMember, WorkspaceMember.workspace_id == Workspace.id)
+            .where(WorkspaceMember.user_id == user_id)
+            .order_by(WorkspaceMember.created_at)
+            .limit(1)
+        )
+        row = result.first()
+        return (row.id, row.onboarding_status) if row is not None else None
+
+    async def _issue_token_pair(self, user: User, *, commit: bool = True) -> tuple[str, str, int]:
         """Builds and persists a new access/refresh token pair for `user`.
 
         `commit` defaults to True (the login/refresh behavior). `register`
@@ -268,7 +299,7 @@ class AuthService:
             ) from err
         raise err
 
-    async def login(self, email: str, password: str) -> tuple[str, str, int]:
+    async def login(self, email: str, password: str) -> LoginResult:
         user = await self.users.get_by_email(email)
         if user is None:
             # Run the hash verification anyway against a fixed dummy hash
@@ -280,9 +311,29 @@ class AuthService:
         if not verify_password(password, user.hashed_password):
             raise InvalidCredentialsError(_INVALID_CREDENTIALS_MESSAGE)
 
-        return await self._issue_token_pair(user)
+        access_token, raw_refresh_token, expires_in = await self._issue_token_pair(user)
+        workspace = await self._primary_workspace_summary(user.id)
+        return LoginResult(
+            access_token=access_token,
+            refresh_token=raw_refresh_token,
+            expires_in=expires_in,
+            workspace_id=workspace[0] if workspace is not None else None,
+            workspace_onboarding_status=workspace[1] if workspace is not None else None,
+        )
 
     async def refresh(self, raw_refresh_token: str) -> tuple[str, str, int]:
+        """Validates and rotates a refresh token.
+
+        The initial `get_by_token_hash` read exists only to produce a
+        precise error message for the not-found/expired cases -- it must
+        NOT be used to decide whether this request is allowed to rotate
+        the token, since two concurrent requests presenting the same
+        token could both read `revoked_at is None` before either commits
+        (a TOCTOU race). The actual "am I allowed to rotate this row"
+        decision is made exclusively by the atomic
+        `claim_for_rotation` conditional UPDATE below, which only one
+        concurrent caller can ever win for a given row.
+        """
         token_hash = hash_opaque_token(raw_refresh_token)
         stored = await self.refresh_tokens.get_by_token_hash(token_hash)
         now = datetime.now(UTC)
@@ -302,24 +353,31 @@ class AuthService:
         if _as_aware_utc(stored.expires_at) < now:
             raise InvalidRefreshTokenError("Refresh token has expired")
 
-        user = await self.users.get_by_id(stored.user_id)
+        # Claim-then-act: only one concurrent caller can flip
+        # revoked_at from NULL to non-NULL for this row. If we lose that
+        # race, another request rotated (or reused) it between our read
+        # above and this claim -- handled identically to a genuine
+        # replay (whole session revoked), since the two are
+        # indistinguishable from a security standpoint.
+        claimed = await self.refresh_tokens.claim_for_rotation(token_hash, now)
+        if claimed is None:
+            await self.refresh_tokens.revoke_session(stored.session_id, now)
+            await self.session.commit()
+            raise InvalidRefreshTokenError("Refresh token has already been used")
+
+        user = await self.users.get_by_id(claimed.user_id)
         if user is None:
             raise InvalidRefreshTokenError("Refresh token not recognized")
 
-        # Rotation: the presented token is revoked and a new pair is
-        # issued in the same session so logout/reuse-detection can still
-        # reason about "this session" across rotations.
-        await self.refresh_tokens.revoke(stored, now)
-
         workspace_ids = await self._workspace_ids_for_user(user.id)
-        access_token, _jti, exp = encode_access_token(user.id, stored.session_id, workspace_ids)
+        access_token, _jti, exp = encode_access_token(user.id, claimed.session_id, workspace_ids)
 
         raw_new_refresh_token = generate_opaque_token()
         refresh_expires_at = now + timedelta(days=settings.jwt_refresh_token_ttl_days)
         await self.refresh_tokens.create(
             RefreshToken(
                 user_id=user.id,
-                session_id=stored.session_id,
+                session_id=claimed.session_id,
                 token_hash=hash_opaque_token(raw_new_refresh_token),
                 expires_at=refresh_expires_at,
             )

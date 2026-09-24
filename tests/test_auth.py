@@ -1,14 +1,21 @@
 import asyncio
+import uuid
 
+import fakeredis.aioredis as fakeredis
 import pytest
 from fastapi import HTTPException, Request
 from httpx import AsyncClient
 from redis.asyncio import Redis
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.auth.dependencies import get_current_user
 from app.auth.jwt import decode_access_token
-from app.auth.models import User
-from app.auth.service import AuthService
+from app.auth.models import RefreshToken, User
+from app.auth.service import AuthService, InvalidRefreshTokenError
+from app.core.config import settings
+from app.models.workspace import Workspace
+from app.models.workspace_member import WorkspaceMember
 from tests.conftest import _SEED_USER_PASSWORD
 
 
@@ -112,6 +119,110 @@ async def test_reused_stale_refresh_token_rejected(client: AsyncClient, seed_use
         "/api/v1/auth/refresh", json={"refresh_token": old_refresh_token}
     )
     assert replay_response.status_code == 401
+
+
+async def test_concurrent_refresh_same_token_only_one_wins_and_session_revoked(
+    db_session: AsyncSession,
+) -> None:
+    """Two requests racing to rotate the SAME refresh token (e.g. a leaked
+    token replayed by an attacker at nearly the same moment as the
+    legitimate user's own refresh) must not both succeed -- see
+    AuthService.refresh's claim_for_rotation. Exactly one wins the atomic
+    claim; the loser is treated identically to a genuine replay, which
+    revokes the entire session, so even the winner's newly-issued token
+    stops working on a subsequent refresh.
+
+    Like test_register_concurrent_same_email_exactly_one_succeeds in
+    tests/test_registration.py, this needs two independent DB
+    connections/transactions racing for real -- the single
+    SAVEPOINT-scoped `db_session`/`client` connection can't be used
+    concurrently by two in-flight requests at once (confirmed empirically:
+    doing so raises `sqlalchemy.exc.InvalidRequestError: Session is
+    already flushing`, since AsyncSession isn't reentrant). So this opens
+    its own engine, provisions its own user via that engine (register,
+    then login -- mirroring `seed_user` but via a real commit so a second
+    connection can see it), and cleans up explicitly afterward instead of
+    relying on `db_session`'s outer-transaction rollback.
+    """
+    email = f"concurrent.refresh.{uuid.uuid4().hex[:8]}@example.com"
+    password = "correct-horse-battery"
+    engine = create_async_engine(settings.test_database_url)
+    session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    async with session_factory() as setup_session:
+        await AuthService(setup_session, fakeredis.FakeRedis(decode_responses=True)).register(
+            email, password
+        )
+
+    async with session_factory() as login_session:
+        login_result = await AuthService(
+            login_session, fakeredis.FakeRedis(decode_responses=True)
+        ).login(email, password)
+    refresh_token = login_result.refresh_token
+    session_id = uuid.UUID(decode_access_token(login_result.access_token).sid)
+
+    async def _attempt() -> tuple[str, str, int]:
+        async with session_factory() as session:
+            service = AuthService(session, fakeredis.FakeRedis(decode_responses=True))
+            return await service.refresh(refresh_token)
+
+    try:
+        results = await asyncio.gather(_attempt(), _attempt(), return_exceptions=True)
+
+        successes = [r for r in results if isinstance(r, tuple)]
+        failures = [r for r in results if isinstance(r, InvalidRefreshTokenError)]
+        assert len(successes) == 1
+        assert len(failures) == 1
+        assert str(failures[0]) == "Refresh token has already been used"
+
+        winning_refresh_token = successes[0][1]
+
+        session_tokens = (
+            (
+                await db_session.execute(
+                    select(RefreshToken).where(RefreshToken.session_id == session_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(session_tokens) >= 2
+        assert all(token.revoked_at is not None for token in session_tokens)
+
+        async with session_factory() as verify_session:
+            verify_service = AuthService(verify_session, fakeredis.FakeRedis(decode_responses=True))
+            with pytest.raises(InvalidRefreshTokenError, match="already been used"):
+                await verify_service.refresh(winning_refresh_token)
+    finally:
+        async with session_factory() as cleanup_session:
+            user = (
+                await cleanup_session.execute(select(User).where(User.email == email))
+            ).scalar_one_or_none()
+            if user is not None:
+                await cleanup_session.execute(
+                    delete(RefreshToken).where(RefreshToken.user_id == user.id)
+                )
+                workspace_ids = (
+                    (
+                        await cleanup_session.execute(
+                            select(WorkspaceMember.workspace_id).where(
+                                WorkspaceMember.user_id == user.id
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                await cleanup_session.execute(
+                    delete(WorkspaceMember).where(WorkspaceMember.user_id == user.id)
+                )
+                if workspace_ids:
+                    await cleanup_session.execute(
+                        delete(Workspace).where(Workspace.id.in_(workspace_ids))
+                    )
+                await cleanup_session.execute(delete(User).where(User.id == user.id))
+                await cleanup_session.commit()
+        await engine.dispose()
 
 
 async def test_logout_revokes_token_and_immediate_next_request_rejected(

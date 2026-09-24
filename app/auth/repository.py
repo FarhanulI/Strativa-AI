@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import PasswordResetToken, RefreshToken, User
@@ -42,6 +42,32 @@ class RefreshTokenRepository:
     async def revoke(self, refresh_token: RefreshToken, revoked_at: datetime) -> None:
         refresh_token.revoked_at = revoked_at
         await self.session.flush()
+
+    async def claim_for_rotation(
+        self, token_hash: str, revoked_at: datetime
+    ) -> RefreshToken | None:
+        """Atomically revokes the token row matching token_hash ONLY IF
+        it is not already revoked, returning the pre-update row's data
+        needed by the caller (user_id, session_id) if the claim
+        succeeded, or None if another request already claimed/revoked
+        it first (or it doesn't exist). This is the single source of
+        truth for "did THIS request win the right to rotate this
+        token" -- callers must not separately check revoked_at before
+        calling this (see AuthService.refresh's TOCTOU note).
+        """
+        result = await self.session.execute(
+            update(RefreshToken)
+            .where(
+                RefreshToken.token_hash == token_hash,
+                RefreshToken.revoked_at.is_(None),
+            )
+            .values(revoked_at=revoked_at)
+            .returning(RefreshToken),
+            execution_options={"populate_existing": True, "synchronize_session": False},
+        )
+        row = result.scalar_one_or_none()
+        await self.session.flush()
+        return row
 
     async def revoke_session(self, session_id: uuid.UUID, revoked_at: datetime) -> None:
         """Revokes every non-revoked refresh token in a session's rotation

@@ -29,11 +29,13 @@ class TokenResponse(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    # generate_opaque_token() produces a 64-char token (secrets.token_urlsafe(48));
+    # 512 is comfortably larger without being an arbitrary guess.
+    refresh_token: str = Field(max_length=512)
 
 
 class LogoutRequest(BaseModel):
-    refresh_token: str
+    refresh_token: str = Field(max_length=512)
 
 
 class PasswordResetRequest(BaseModel):

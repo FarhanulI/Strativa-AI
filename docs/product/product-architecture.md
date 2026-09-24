@@ -874,6 +874,18 @@ Performance is therefore not merely an analytics feature.
 
 It is part of the intelligence system.
 
+**Implementation status (Day 26):** the loop closes end-to-end. A
+`Learning` model (`app/learning/`) extracts durable strategic patterns
+from `PerformanceAnalysis`/`PerformanceInsight` — a scheduled periodic
+job compares performance across a dimension (format, topic, pillar,
+hook_style, cta, timing) once enough analyses exist for a profile, and
+surfaces statistical deltas as candidate learnings, with an AI-enriched
+explanation and a deterministic templated fallback. Active learnings feed
+back into `opportunity_scorer` as a small, explicitly capped
+`learning_alignment` score factor when a new opportunity's
+pillar/format/topic matches one, and `opportunity_reasoning` references
+the influencing learning when one applies.
+
 ---
 
 # Social Platform Architecture
@@ -907,14 +919,18 @@ External platform integrations should not leak platform-specific models into the
 
 The internal system should operate on normalized content and performance data.
 
-**Implementation status (Day 23):** the first real `Platform Adapter`
-implementations now exist for YouTube, Facebook, and Instagram
-(`app/platform_connections/adapters.py`), implementing this section's
+**Implementation status (Day 25):** real `Platform Adapter`
+implementations exist for YouTube, Facebook, and Instagram
+(`app/platform_connections/adapters.py`), covering both this section's
 connection/authorization surface — OAuth connect, token refresh, and
-disconnect — behind the same `SocialPlatformAdapter` contract Day 9
-defined. `publish`/`fetch_posts`/`fetch_post`/`fetch_metrics` remain typed
-stubs that raise; wiring a real publish call through these adapters is Day
-24. TikTok, LinkedIn, and X have no OAuth implementation yet.
+disconnect (Day 23) — and, per **Social Platform Architecture** below,
+the publish path itself: Day 24 wired `publish`/`publish_content` through
+these adapters for scheduled and immediate publishing, and Day 25
+connects manually-entered metrics to a specific `PublishedContent` record
+and runs `PerformanceAnalysis` against it as an async job. `fetch_posts`/
+`fetch_post`/`fetch_metrics` (automatic ingestion from the platform,
+rather than manual metrics entry) remain typed stubs that raise. TikTok,
+LinkedIn, and X have no OAuth or publish implementation yet.
 
 A `PlatformConnection` model (one row per `ContentProfile` per platform,
 never per `Workspace`) records the credential a profile actually
@@ -1045,28 +1061,26 @@ Rules:
 
 Until identity and membership exist, the system is an internal or controlled-beta workspace, not a public multi-tenant product.
 
-**Implementation status (Day 20):** the "Authenticated User" step of this
-chain now exists — `app/auth/` issues and verifies JWT access tokens
-(login, refresh with mandatory rotation, logout via Redis-based `jti`
-revocation, password reset), and `app/auth/dependencies.get_current_user`
-is the one reusable dependency that establishes caller identity from a
-verified credential, per the rule above. This API is consumed exclusively
-by a trusted Next.js server (BFF pattern) over a server-to-server
-connection, never directly by the browser, so both the access and
-refresh tokens are returned in the JSON response body rather than a
-cookie — browser-facing cookie protections (httpOnly, Secure, SameSite)
-are the BFF's responsibility on its own domain, not this API's. The
-chain stops there, however:
-**every step below "Authenticated User" — Workspace Membership, Role/
-Permissions, and the full ownership-chain validation on resource
-lookups — remains unimplemented.** `WorkspaceMember.user_id` is a bare,
-unenforced `String(255)` with no foreign key to `User.id`, and every
-Day 15-19 router still trusts a client-supplied `workspace_id`/
-`profile_id` directly rather than deriving it from membership. This is a
-live cross-tenant access gap, tracked as Day 21 - Ownership-Chain
-Enforcement Retrofit (see `docs/development/progress.md`, Day 20 entry).
-Days 15-19 must not be treated as satisfying this section until Day 21
-lands.
+**Implementation status (Day 21):** the full chain above is implemented.
+`app/auth/` issues and verifies JWT access tokens (login, refresh with
+mandatory rotation, logout via Redis-based `jti` revocation, password
+reset), and `app/auth/dependencies.get_current_user` is the one reusable
+dependency that establishes caller identity from a verified credential.
+This API is consumed exclusively by a trusted Next.js server (BFF
+pattern) over a server-to-server connection, never directly by the
+browser, so both the access and refresh tokens are returned in the JSON
+response body rather than a cookie — browser-facing cookie protections
+(httpOnly, Secure, SameSite) are the BFF's responsibility on its own
+domain, not this API's.
+
+`WorkspaceMember.user_id` carries a real foreign key to `User.id` (Day
+21 - Ownership-Chain Enforcement Retrofit), and `app/authz/dependencies.py`
+provides the reusable membership/ownership-chain dependencies every
+router uses: workspace context is derived from a genuine, indexed
+`(user_id, workspace_id)` `WorkspaceMember` lookup — never trusted from a
+client-supplied identifier — and a `profile_id` is only valid if it
+belongs to a workspace the caller is a member of. A mismatch at any level
+returns 404, never 403, per the rule above.
 
 ---
 
@@ -1139,7 +1153,7 @@ Principles:
 * **Indexes are designed for actual access paths** (foreign keys used in filters, profile + created_at, workspace-scoped lookups, status and lifecycle filtering, performance by profile and publication date) and validated against query plans.
 * **Connection pooling, statement timeouts, SSL, and health checks are configured per environment.**
 
-The production database is PostgreSQL. Fast in-memory SQLite tests are a development convenience and do not validate PostgreSQL enum behavior, JSONB semantics, partial unique indexes, concurrency, or migrations — so a PostgreSQL integration pipeline runs migrations and tests against a real instance before release.
+The production database is PostgreSQL, served via Neon (serverless Postgres with `pgvector`, fronted by PgBouncer in transaction-pooling mode). Local dev and the automated test suite both target real Neon branches — a `dev` branch for running the API/worker, and a separate, persistent `test` branch the suite runs real Alembic migrations and tests against (see `tests/conftest.py`) — so PostgreSQL enum behavior, JSONB semantics, partial unique indexes, and migrations are already validated on every test run, not deferred to a separate integration pipeline.
 
 ---
 
@@ -1418,7 +1432,7 @@ Requires:
 * validated production secrets and configuration
 * rate limiting and request-size limits
 * structured exception handling and safe error responses
-* PostgreSQL integration tests run against a real instance
+* PostgreSQL integration tests run against a real instance — **met**: the test suite runs against a persistent Neon Postgres `test` branch, not SQLite
 * database backups with tested restore
 * CI running tests, migrations, linting, and security checks
 * AI timeouts, retries, cost limits, and provider failure handling — for both reasoning and execution tasks
@@ -1443,18 +1457,21 @@ Adds:
 Adds:
 
 * social platform adapters and ingestion jobs — **connection/authorization
-  surface implemented for YouTube, Facebook, and Instagram (Day 23)**;
-  publish/ingestion calls through these adapters, and adapters for
-  TikTok/LinkedIn/X, remain outstanding
-* publishing and scheduling
-* durable performance synchronization and content→performance attribution
+  and publish surfaces implemented for YouTube, Facebook, and Instagram
+  (Days 23-24)**; automatic metrics ingestion from the platform (as
+  opposed to manual metrics entry, implemented Day 25) and adapters for
+  TikTok/LinkedIn/X remain outstanding
+* publishing and scheduling — **implemented (Day 24)**: schedule,
+  publish-immediately, cancel, and a distributed recovery sweep for
+  `PublishedContent`
+* durable performance synchronization and content→performance attribution — manual metrics entry against a specific `PublishedContent` record is implemented (Day 25); automatic platform-side synchronization is outstanding
 * model/provider fallback policies
 * caching for stable intelligence reads
 * data retention and archival policies
 * load and concurrency testing
 * tenant-level usage isolation and billing enforcement
 
-Until the full loop — connected accounts, publishing, measurement, and automated learning — is operational, the system is a strategy and intelligence workspace rather than a complete Content Operating System. **Connected accounts** now has a first real implementation (Day 23: OAuth connect/disconnect and destination selection for YouTube, Facebook, and Instagram); publishing through those connections, measurement, and automated learning from real platform data remain outstanding.
+The full loop — connected accounts, publishing, measurement, and automated learning — is now operational end-to-end for YouTube, Facebook, and Instagram: OAuth connect/disconnect and destination selection (Day 23), publish/schedule (Day 24), manual performance ingestion feeding real `PerformanceAnalysis` (Day 25), and pattern extraction feeding back into opportunity scoring (Day 26 - Learning Engine, see **Learning Loop**). Automatic metrics ingestion (rather than manual entry) and TikTok/LinkedIn/X support remain the gaps before this is a complete Content Operating System across all target platforms.
 
 The ordering principle: **security and platform reliability precede additional creative-generation capability.**
 
